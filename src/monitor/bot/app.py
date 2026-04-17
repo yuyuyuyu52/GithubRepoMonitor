@@ -99,6 +99,7 @@ def create_application(
                     conn=conn,
                     pref_builder=pref_builder,
                     refresh_threshold=refresh_threshold,
+                    allowed_chat_id=chat_id,
                 )
             ),
             pattern=r"^fb:",

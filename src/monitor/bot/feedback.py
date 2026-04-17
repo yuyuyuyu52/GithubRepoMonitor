@@ -26,6 +26,7 @@ async def handle_feedback_callback(
     conn: aiosqlite.Connection,
     pref_builder: PreferenceBuilderLike,
     refresh_threshold: int,
+    allowed_chat_id: str | None = None,
 ) -> None:
     """Handle one feedback-button press.
 
@@ -34,6 +35,21 @@ async def handle_feedback_callback(
     pass a `SimpleNamespace` without spinning up a real PTB app.
     """
     cq = update.callback_query
+
+    # Chat-id gate: PTB's CallbackQueryHandler doesn't compose cleanly with
+    # filters.Chat, so we enforce here. None means no enforcement (tests).
+    if allowed_chat_id is not None:
+        msg = getattr(cq, "message", None)
+        chat = getattr(msg, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        if chat_id is None or str(chat_id) != str(allowed_chat_id):
+            log.info("feedback.rejected_foreign_chat", chat_id=chat_id)
+            try:
+                await cq.answer()
+            except Exception:  # noqa: BLE001
+                pass
+            return
+
     await cq.answer()  # always ack so the TG button stops spinning
 
     parsed = parse_callback_data(cq.data or "")

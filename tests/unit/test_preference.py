@@ -137,3 +137,36 @@ async def test_regenerate_limits_to_recent_N_per_action(tmp_db: Path) -> None:
     assert "like/repo-1" not in seen_repos
     assert "dislike/repo-1" not in seen_repos
     await conn.close()
+
+
+async def test_regenerate_uses_current_time_not_construction_time(tmp_db: Path, monkeypatch) -> None:
+    """Without a `now=` override, regenerate() must stamp the profile with
+    the current time — otherwise long-lived daemons would freeze
+    generated_at at construction and break count_feedback_since_last_profile."""
+    import datetime as dt
+
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    # Seed some feedback
+    await _seed_feedback(conn, [
+        ("like", "2026-04-10T00:00:00+00:00", {"full_name": "a/b"}),
+    ])
+
+    fake_llm = AsyncMock(return_value="profile")
+    # Construct WITHOUT `now=` so the builder computes now at call time
+    builder = PreferenceBuilder(conn=conn, llm_generate_profile=fake_llm)
+
+    fixed = dt.datetime(2026, 6, 1, 12, 0, tzinfo=dt.timezone.utc)
+
+    class _FakeDT(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    monkeypatch.setattr("monitor.scoring.preference.dt.datetime", _FakeDT)
+
+    result = await builder.regenerate()
+    assert result is not None
+    assert result.generated_at == fixed
+    await conn.close()

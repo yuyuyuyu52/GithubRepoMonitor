@@ -74,12 +74,11 @@ async def run() -> int:
     finally:
         log.info("shutdown.begin")
         if bot_app is not None:
-            try:
-                await bot_app.updater.stop()
-                await bot_app.stop()
-                await bot_app.shutdown()
-            except Exception:  # noqa: BLE001
-                log.exception("shutdown.bot_stop_failed")
+            for step in (bot_app.updater.stop, bot_app.stop, bot_app.shutdown):
+                try:
+                    await step()
+                except Exception:  # noqa: BLE001
+                    log.exception("shutdown.bot_step_failed", step=step.__name__)
         await conn.close()
         log.info("shutdown.done")
     return 0

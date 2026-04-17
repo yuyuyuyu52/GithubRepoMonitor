@@ -220,3 +220,69 @@ async def test_invalid_callback_data_is_noop(tmp_db: Path) -> None:
         count = (await cur.fetchone())[0]
     assert count == 0
     await conn.close()
+
+
+async def test_callback_from_foreign_chat_is_rejected(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    repo = _repo()
+    push_id = await _insert_sample(conn, repo)
+
+    # CallbackQuery whose message.chat.id is a different chat than the
+    # allowed one. PTB's default CallbackQueryHandler would accept this;
+    # our guard rejects it.
+    cq = SimpleNamespace(
+        data=f"fb:like:{push_id}",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        message=SimpleNamespace(chat=SimpleNamespace(id=99999)),
+    )
+    pref_builder = SimpleNamespace(regenerate=AsyncMock())
+
+    await handle_feedback_callback(
+        _fake_update(cq),
+        conn=conn,
+        pref_builder=pref_builder,
+        refresh_threshold=5,
+        allowed_chat_id="12345",
+    )
+
+    # No feedback row written, no message edit
+    async with conn.execute("SELECT COUNT(*) FROM user_feedback") as cur:
+        count = (await cur.fetchone())[0]
+    assert count == 0
+    cq.edit_message_text.assert_not_awaited()
+    # Still acked so the button stops spinning client-side
+    cq.answer.assert_awaited()
+    await conn.close()
+
+
+async def test_callback_from_allowed_chat_is_accepted(tmp_db: Path) -> None:
+    """Counterpart to the foreign-chat test: matching chat_id lets it through."""
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    repo = _repo()
+    push_id = await _insert_sample(conn, repo)
+
+    cq = SimpleNamespace(
+        data=f"fb:like:{push_id}",
+        answer=AsyncMock(),
+        edit_message_text=AsyncMock(),
+        message=SimpleNamespace(chat=SimpleNamespace(id=12345)),
+    )
+    pref_builder = SimpleNamespace(regenerate=AsyncMock())
+
+    await handle_feedback_callback(
+        _fake_update(cq),
+        conn=conn,
+        pref_builder=pref_builder,
+        refresh_threshold=5,
+        allowed_chat_id="12345",
+    )
+
+    async with conn.execute("SELECT COUNT(*) FROM user_feedback") as cur:
+        count = (await cur.fetchone())[0]
+    assert count == 1
+    await conn.close()
