@@ -7,6 +7,8 @@ from monitor.db import (
     connect,
     count_feedback_since_last_profile,
     get_daemon_state,
+    get_latest_run_logs,
+    get_recent_pushes,
     insert_pushed_item,
     record_user_feedback,
     run_migrations,
@@ -207,4 +209,57 @@ async def test_count_feedback_since_last_profile(tmp_db: Path) -> None:
     )
     # Now only 1 feedback row is "since" the profile
     assert await count_feedback_since_last_profile(conn) == 1
+    await conn.close()
+
+
+async def test_get_recent_pushes_returns_most_recent_first(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    t0 = dt.datetime(2026, 4, 18, tzinfo=dt.timezone.utc)
+
+    # Insert 3 pushes at known times
+    for i, delta in enumerate([0, 60, 120]):
+        await conn.execute(
+            "INSERT INTO pushed_items "
+            "(full_name, pushed_at, push_type, rule_score, llm_score, final_score, "
+            " summary, reason, tg_chat_id) "
+            "VALUES (?, ?, 'digest', 1, 1, ?, ?, ?, ?)",
+            (
+                f"a/repo-{i}",
+                (t0 + dt.timedelta(seconds=delta)).isoformat(),
+                float(i),
+                f"s{i}",
+                f"r{i}",
+                "12345",
+            ),
+        )
+    await conn.commit()
+
+    rows = await get_recent_pushes(conn, limit=2)
+    assert [r["full_name"] for r in rows] == ["a/repo-2", "a/repo-1"]
+    assert rows[0]["final_score"] == 2.0
+    assert rows[0]["summary"] == "s2"
+    await conn.close()
+
+
+async def test_get_latest_run_logs_returns_most_recent_first(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    t0 = dt.datetime(2026, 4, 18, tzinfo=dt.timezone.utc)
+
+    import json
+    for i, delta in enumerate([0, 60, 120]):
+        started = (t0 + dt.timedelta(seconds=delta)).isoformat()
+        ended = (t0 + dt.timedelta(seconds=delta + 5)).isoformat()
+        await conn.execute(
+            "INSERT INTO run_log (kind, started_at, ended_at, status, stats) "
+            "VALUES (?, ?, ?, 'ok', ?)",
+            (f"digest_{i}", started, ended, json.dumps({"repos_pushed": i})),
+        )
+    await conn.commit()
+
+    rows = await get_latest_run_logs(conn, limit=2)
+    assert [r["kind"] for r in rows] == ["digest_2", "digest_1"]
+    assert rows[0]["status"] == "ok"
+    assert rows[0]["stats"] == {"repos_pushed": 2}
     await conn.close()

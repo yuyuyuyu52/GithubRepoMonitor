@@ -523,3 +523,71 @@ async def count_feedback_since_last_profile(conn: aiosqlite.Connection) -> int:
     ) as cur:
         count_row = await cur.fetchone()
     return int(count_row[0])
+
+
+async def get_recent_pushes(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    async with conn.execute(
+        """
+        SELECT id, full_name, pushed_at, push_type,
+               rule_score, llm_score, final_score,
+               summary, reason
+        FROM pushed_items
+        ORDER BY pushed_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "full_name": r[1],
+            "pushed_at": r[2],
+            "push_type": r[3],
+            "rule_score": r[4],
+            "llm_score": r[5],
+            "final_score": r[6],
+            "summary": r[7] or "",
+            "reason": r[8] or "",
+        }
+        for r in rows
+    ]
+
+
+async def get_latest_run_logs(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int = 5,
+) -> list[dict]:
+    async with conn.execute(
+        """
+        SELECT id, kind, started_at, ended_at, status, stats
+        FROM run_log
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    result: list[dict] = []
+    for r in rows:
+        stats_raw = r[5]
+        try:
+            stats = json.loads(stats_raw) if stats_raw else {}
+        except (TypeError, ValueError):
+            stats = {}
+        result.append(
+            {
+                "id": r[0],
+                "kind": r[1],
+                "started_at": r[2],
+                "ended_at": r[3],
+                "status": r[4],
+                "stats": stats,
+            }
+        )
+    return result
