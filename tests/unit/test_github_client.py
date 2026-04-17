@@ -132,3 +132,77 @@ async def test_client_without_token_omits_authorization_header() -> None:
         headers = anon._base_headers()
     assert "Authorization" not in headers
     assert headers["User-Agent"] == "GithubRepoMonitor"
+
+
+async def test_client_double_enter_raises() -> None:
+    c = GitHubClient(token=None, request_timeout_s=5.0)
+    async with c:
+        with pytest.raises(RuntimeError, match="already entered"):
+            await c.__aenter__()
+
+
+async def test_request_without_context_manager_raises() -> None:
+    c = GitHubClient(token=None, request_timeout_s=5.0)
+    with pytest.raises(RuntimeError, match="async with"):
+        await c._request_json("/repos/a/b")
+
+
+@respx.mock
+async def test_request_json_retries_on_403_abuse_detection(
+    client: GitHubClient, monkeypatch
+) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://api.github.com/repos/a/b").mock(
+        side_effect=[
+            httpx.Response(
+                403,
+                headers={"Retry-After": "7"},
+                text="You have triggered an abuse detection mechanism.",
+            ),
+            httpx.Response(200, json={"full_name": "a/b"}),
+        ]
+    )
+    async with client:
+        data = await client._request_json("/repos/a/b")
+    assert data == {"full_name": "a/b"}
+    assert slept == [7.0]
+
+
+@respx.mock
+async def test_request_json_exhausts_retries_on_persistent_429(
+    client: GitHubClient, monkeypatch
+) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://api.github.com/repos/a/b").mock(
+        return_value=httpx.Response(429, headers={"Retry-After": "1"}, text="rate limit")
+    )
+    async with client:
+        with pytest.raises(GitHubError) as exc_info:
+            await client._request_json("/repos/a/b")
+    assert exc_info.value.status_code == 429
+    assert "rate limit exhausted" in exc_info.value.message
+
+
+@respx.mock
+async def test_headers_override_merges_with_defaults(client: GitHubClient) -> None:
+    """Passing an Accept override must not drop Authorization / User-Agent."""
+    route = respx.get("https://api.github.com/repos/a/b/readme").mock(
+        return_value=httpx.Response(200, text="# hi")
+    )
+    async with client:
+        await client._request_text(
+            "/repos/a/b/readme",
+            headers_override={"Accept": "application/vnd.github.raw+json"},
+        )
+    req = route.calls.last.request
+    assert req.headers["Accept"] == "application/vnd.github.raw+json"
+    assert req.headers["User-Agent"] == "GithubRepoMonitor"
+    assert req.headers["Authorization"] == "Bearer ghp_test"

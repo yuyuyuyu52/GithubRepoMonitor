@@ -20,6 +20,15 @@ _RETRYABLE_NETWORK_ERRORS = (
     httpx.RemoteProtocolError,
 )
 
+# GitHub returns 403 for several retryable conditions (primary/secondary rate
+# limit, abuse detection). Match any of these phrases case-insensitively in
+# the response body to distinguish from non-retryable 403s (permission denied).
+_RATE_LIMIT_BODY_PHRASES = (
+    "rate limit",
+    "abuse detection",
+    "secondary rate limit",
+)
+
 
 class GitHubError(Exception):
     """Non-retryable GitHub API error (4xx other than rate limit)."""
@@ -33,17 +42,23 @@ class GitHubError(Exception):
 class GitHubClient:
     """Async httpx client for the GitHub REST API.
 
+    Must be used as an async context manager exactly once::
+
+        async with GitHubClient(token=...) as client:
+            ...
+
+    Entering a second time (without exiting in between) raises RuntimeError —
+    that would leak the previous httpx.AsyncClient and its connection pool.
+
     Handles:
       - User-Agent + optional Bearer auth headers
       - Primary rate limit (X-RateLimit-*) via RateLimiter.acquire()
       - Secondary rate limit on /search via SearchRateLimiter (applied from
         within search_repositories, not here)
-      - 429 / secondary limit retry via Retry-After
+      - 429 / 403-with-rate-limit-phrases retry via Retry-After
       - 5xx retry with exponential backoff (1, 2, 4, 8 s capped at 30)
       - Network error retry with the same backoff
       - Max 4 attempts total; then raise GitHubError or the network exception
-
-    The async context manager owns the underlying httpx.AsyncClient.
     """
 
     MAX_ATTEMPTS = 4
@@ -64,6 +79,10 @@ class GitHubClient:
         self._http: httpx.AsyncClient | None = None
 
     async def __aenter__(self) -> "GitHubClient":
+        if self._http is not None:
+            raise RuntimeError(
+                "GitHubClient is already entered; do not nest `async with` blocks"
+            )
         self._http = httpx.AsyncClient(
             base_url=GITHUB_API_BASE,
             timeout=self._timeout_s,
@@ -109,10 +128,14 @@ class GitHubClient:
         headers_override: dict[str, str] | None = None,
         expect_json: bool = True,
     ) -> Any:
-        assert self._http is not None, "GitHubClient used outside context manager"
-        headers = headers_override or self._base_headers()
+        if self._http is None:
+            raise RuntimeError(
+                "GitHubClient must be used inside `async with`"
+            )
+        # Merge override on top of defaults so callers can tweak a single
+        # header (e.g. Accept for raw README) without losing Authorization.
+        headers = {**self._base_headers(), **(headers_override or {})}
 
-        last_error: Exception | None = None
         for attempt in range(self.MAX_ATTEMPTS):
             await self.rate_limiter.acquire()
             try:
@@ -123,20 +146,24 @@ class GitHubClient:
                     headers=headers,
                 )
             except _RETRYABLE_NETWORK_ERRORS as exc:
-                last_error = exc
                 if attempt == self.MAX_ATTEMPTS - 1:
                     raise
+                log.info(
+                    "github.network_error",
+                    url=url_or_path,
+                    attempt=attempt,
+                    error=str(exc),
+                )
                 await asyncio.sleep(self._backoff(attempt))
                 continue
 
             self.rate_limiter.update_from_headers(resp.headers)
 
-            if resp.status_code == 429 or (
-                resp.status_code == 403 and "rate limit" in resp.text.lower()
-            ):
+            if _is_rate_limit_response(resp):
                 retry_after = self._parse_retry_after(resp.headers.get("Retry-After"))
                 log.info(
                     "github.rate_limited",
+                    url=url_or_path,
                     status=resp.status_code,
                     retry_after_s=retry_after,
                 )
@@ -146,7 +173,12 @@ class GitHubClient:
                 continue
 
             if resp.status_code >= 500:
-                log.info("github.server_error", status=resp.status_code, attempt=attempt)
+                log.info(
+                    "github.server_error",
+                    url=url_or_path,
+                    status=resp.status_code,
+                    attempt=attempt,
+                )
                 if attempt == self.MAX_ATTEMPTS - 1:
                     raise GitHubError(resp.status_code, resp.text[:200])
                 await asyncio.sleep(self._backoff(attempt))
@@ -157,8 +189,9 @@ class GitHubClient:
 
             return resp.json() if expect_json else resp.text
 
-        assert last_error is not None
-        raise last_error
+        # All exit paths above either return, raise, or continue. The loop can
+        # only reach this line if MAX_ATTEMPTS is 0, which the constant forbids.
+        raise AssertionError("unreachable: retry loop exhausted without decision")
 
     @staticmethod
     def _backoff(attempt: int) -> float:
@@ -166,9 +199,20 @@ class GitHubClient:
 
     @staticmethod
     def _parse_retry_after(value: str | None) -> float:
+        # GitHub always sends integer seconds; RFC 7231 also allows HTTP-date
+        # which we do not handle (fall back to 60s default).
         if not value:
             return 60.0
         try:
             return float(value)
         except ValueError:
             return 60.0
+
+
+def _is_rate_limit_response(resp: httpx.Response) -> bool:
+    if resp.status_code == 429:
+        return True
+    if resp.status_code == 403:
+        body = resp.text.lower()
+        return any(phrase in body for phrase in _RATE_LIMIT_BODY_PHRASES)
+    return False
