@@ -48,3 +48,25 @@ async def test_main_starts_runs_migrations_and_exits_on_sigterm(tmp_path: Path) 
             await proc.wait()
 
     assert (tmp_path / "mon.db").exists()
+
+
+async def test_main_logs_telegram_disabled_when_no_credentials(tmp_path: Path) -> None:
+    proc = await _start_process(tmp_path)
+    try:
+        disabled_seen = False
+        for _ in range(50):
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+            if not line:
+                break
+            if b"telegram.disabled" in line:
+                disabled_seen = True
+                break
+        assert disabled_seen, "daemon should log telegram.disabled when token missing"
+    finally:
+        if proc.returncode is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
