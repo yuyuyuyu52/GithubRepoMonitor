@@ -57,3 +57,17 @@ M1 plan: `docs/superpowers/plans/2026-04-17-m1-scaffolding.md`.
 - Timezone-aware datetimes everywhere; `parse_dt` normalizes Z/offset ISO strings to UTC.
 - Chinese user-facing strings (carried into M4's Telegram renders).
 - No-external-HTTP-client was the demo rule; M2 replaces urllib with httpx across the new codebase.
+
+### M2 additions
+
+`src/monitor/clients/github.py` is the async httpx client. All requests go through `_retrying_request`, which handles primary rate limits (via `RateLimiter.acquire()` before each call and header-driven state updates after), 429/secondary-limit retries that honor `Retry-After` (plus 403 bodies containing "rate limit" / "abuse detection" / "secondary rate limit"), 5xx retries with exponential backoff (1/2/4/8 s capped at 30), and network-error retries under the same budget (max 4 attempts). `/search/repositories` additionally goes through `SearchRateLimiter` (2 s minimum spacing). 4xx other than rate-limit raise `GitHubError(status_code, message)` immediately, including from the per-endpoint fetch methods — `fetch_repo_events` / `fetch_contributors_growth` / `fetch_issue_response_hours` let `GitHubError` bubble so `enrich_repo`'s per-field try/except can record an `EnrichError`. Only `fetch_readme` catches 404 specifically (returns `""` — empty README is a normal state, not a failure) and `fetch_repository_detail` catches 404 (returns `None`).
+
+`src/monitor/clients/rate_limit.py` exposes `RateLimiter` (primary) + `SearchRateLimiter` (secondary). Both hold their `asyncio.Lock` across the sleep so one coroutine blocks the others for the rate-limit window instead of all thundering at reset. Primary sleep is capped at `_MAX_SLEEP_S` (~1 reset cycle) to defend against malformed reset headers.
+
+`src/monitor/pipeline/collect.py` exposes `collect_candidates(client, keywords, languages, min_stars)` — keyword × language search cross-product plus trending scrape, deduped by `full_name`. Individual search-pair failures are logged and swallowed.
+
+`src/monitor/pipeline/enrich.py` exposes `enrich_repo(client, repo) -> list[EnrichError]`. Each of the four enrichment endpoints (events, contributors, issues, readme) is tried in isolation; a failure there records an `EnrichError(step, message, repo)` but leaves other fields and the repo usable.
+
+The shared domain model is `monitor.models.RepoCandidate` (`@dataclass(slots=True)`) plus `EnrichError`. Fields are populated at distinct stages: collect fills metadata; enrich fills metrics + readme; M3 will fill scoring fields; M4 will fill push metadata.
+
+Tests use fixtures from `tests/fixtures/github_payloads.py` (canonical dict literals) with `respx` mocking httpx. `tests/integration/test_pipeline_m2.py` exercises collect + enrich end-to-end against a respx-mocked GitHub. No live GitHub calls in the suite yet — a live smoke test is deferred to M5 when the scheduler wires everything up.
