@@ -59,5 +59,5 @@ async def test_migrations_from_v1_to_v2_preserves_existing_rows(tmp_db: Path) ->
 
     async with conn.execute("SELECT value FROM blacklist") as cur:
         rows = await cur.fetchall()
-    assert rows == [("badactor",)]
+    assert [tuple(r) for r in rows] == [("badactor",)]
     await conn.close()
