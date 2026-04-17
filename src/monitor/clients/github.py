@@ -225,6 +225,17 @@ class GitHubClient:
         items = payload.get("items", []) if isinstance(payload, dict) else []
         return [_repo_from_api(item) for item in items]
 
+    async def fetch_repository_detail(self, full_name: str) -> RepoCandidate | None:
+        try:
+            payload = await self._request_json(f"/repos/{full_name}")
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return None
+            raise
+        if not isinstance(payload, dict):
+            return None
+        return _repo_from_api(payload)
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:

@@ -3,7 +3,7 @@ import pytest
 import respx
 
 from monitor.clients.github import GitHubClient, GitHubError
-from tests.fixtures.github_payloads import SEARCH_REPOSITORIES_OK
+from tests.fixtures.github_payloads import REPO_DETAIL_WIDGET, SEARCH_REPOSITORIES_OK
 
 
 @pytest.fixture
@@ -260,3 +260,25 @@ async def test_search_repositories_builds_correct_query(client: GitHubClient) ->
     assert req.url.params["sort"] == "stars"
     assert req.url.params["order"] == "desc"
     assert req.url.params["per_page"] == "30"
+
+
+@respx.mock
+async def test_fetch_repository_detail_returns_candidate(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/acme/widget").mock(
+        return_value=httpx.Response(200, json=REPO_DETAIL_WIDGET)
+    )
+    async with client:
+        repo = await client.fetch_repository_detail("acme/widget")
+    assert repo is not None
+    assert repo.full_name == "acme/widget"
+    assert repo.stars == 420
+
+
+@respx.mock
+async def test_fetch_repository_detail_returns_none_on_404(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/acme/missing").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    async with client:
+        repo = await client.fetch_repository_detail("acme/missing")
+    assert repo is None
