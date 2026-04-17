@@ -76,13 +76,11 @@ async def score_repo(
             result = heuristic_score_readme(repo, interest_tags=list(config.keywords))
             source = "heuristic"
 
-        await put_cached_llm_score(
-            conn,
-            repo.full_name,
-            readme_sha256=readme_hash,
-            result=result,
-        )
-
+    # Mutate the repo BEFORE the cache write so a cache-write failure (e.g.
+    # transient SQLite lock under future multi-writer scenarios) doesn't
+    # silently drop an otherwise-valid LLM result. Cache is a performance
+    # optimization for future runs; the current repo's score is the primary
+    # output and must land on the model object regardless.
     repo.llm_score = result.score
     repo.readme_completeness = result.readme_completeness
     repo.summary = result.summary
@@ -91,6 +89,14 @@ async def score_repo(
         repo.rule_score * config.weights.rule + repo.llm_score * config.weights.llm,
         2,
     )
+
+    if source != "cache":
+        await put_cached_llm_score(
+            conn,
+            repo.full_name,
+            readme_sha256=readme_hash,
+            result=result,
+        )
     log.info(
         "score.done",
         repo=repo.full_name,
