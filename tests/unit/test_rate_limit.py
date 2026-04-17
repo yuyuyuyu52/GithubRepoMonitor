@@ -123,3 +123,23 @@ async def test_rate_limiter_caps_anomalous_reset_header(monkeypatch) -> None:
     assert slept, "expected to sleep"
     # Cap is 3700s; the raw header wants 36000s.
     assert slept[0] <= 3700.0
+
+
+def test_update_from_headers_tolerates_malformed_values() -> None:
+    """Out-of-range epochs or non-string values must not crash the caller."""
+    rl = RateLimiter()
+    # Huge epoch triggers OverflowError / OSError from datetime.fromtimestamp.
+    rl.update_from_headers({"X-RateLimit-Reset": "999999999999999999"})
+    assert rl._reset_at is None
+
+    # Non-string remaining (e.g. a bytes-like value leaking through a custom
+    # Mapping) must not propagate.
+    class WeirdMap(dict):
+        def get(self, key, default=None):
+            if key == "X-RateLimit-Remaining":
+                return 42  # int, not str
+            return super().get(key, default)
+
+    rl2 = RateLimiter()
+    rl2.update_from_headers(WeirdMap())
+    assert rl2._remaining == 42  # int(42) is still valid, no crash

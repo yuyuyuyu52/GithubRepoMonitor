@@ -222,13 +222,22 @@ class GitHubClient:
     @staticmethod
     def _parse_retry_after(value: str | None) -> float:
         # GitHub always sends integer seconds; RFC 7231 also allows HTTP-date
-        # which we do not handle (fall back to 60s default).
+        # which we do not handle (fall back to 60s default). Malformed values,
+        # NaN/inf, and negatives all collapse to the safe default / floor — the
+        # retry-budget exhaustion path handles persistent rate limits, so we
+        # never want to either sleep a negative duration (ValueError from
+        # asyncio.sleep) or sleep forever.
         if not value:
             return 60.0
         try:
-            return float(value)
-        except ValueError:
+            parsed = float(value)
+        except (TypeError, ValueError):
             return 60.0
+        if parsed != parsed:  # NaN
+            return 60.0
+        if parsed in (float("inf"), float("-inf")):
+            return 60.0
+        return max(0.0, parsed)
 
     async def search_repositories(
         self, *, keyword: str, language: str, min_stars: int

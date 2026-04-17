@@ -525,3 +525,16 @@ async def test_fetch_trending_does_not_send_authorization(client: GitHubClient) 
     assert trending_req.headers["User-Agent"] == "GithubRepoMonitor"
     # HTML Accept should be set to something reasonable for a web page.
     assert "text/html" in trending_req.headers["Accept"]
+
+
+def test_parse_retry_after_clamps_negative_and_bogus() -> None:
+    """Negative / NaN / inf Retry-After must not flow into asyncio.sleep."""
+    assert GitHubClient._parse_retry_after("-5") == 0.0
+    assert GitHubClient._parse_retry_after("nan") == 60.0
+    assert GitHubClient._parse_retry_after("inf") == 60.0
+    assert GitHubClient._parse_retry_after("-inf") == 60.0
+    assert GitHubClient._parse_retry_after("not a number") == 60.0
+    assert GitHubClient._parse_retry_after(None) == 60.0
+    assert GitHubClient._parse_retry_after("") == 60.0
+    # Positive finite values pass through
+    assert GitHubClient._parse_retry_after("7.5") == 7.5

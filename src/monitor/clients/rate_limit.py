@@ -55,19 +55,23 @@ class RateLimiter:
             await asyncio.sleep(min(wait_s, _MAX_SLEEP_S))
 
     def update_from_headers(self, headers: Mapping[str, str]) -> None:
-        # GitHub returns integer epoch strings; float formats are silently
-        # ignored by the try/except below (unlikely to ship but non-fatal).
+        # GitHub returns integer epoch strings. Float formats, non-strings, and
+        # out-of-range / huge epoch values are all silently ignored rather than
+        # crashing the caller — a broken header leaves the limiter state on its
+        # previous value, which is far better than tearing down a digest run.
         remaining = headers.get("X-RateLimit-Remaining")
         reset = headers.get("X-RateLimit-Reset")
         if remaining is not None:
             try:
                 self._remaining = int(remaining)
-            except ValueError:
+            except (TypeError, ValueError):
                 pass
         if reset is not None:
             try:
-                self._reset_at = dt.datetime.fromtimestamp(int(reset), tz=dt.timezone.utc)
-            except ValueError:
+                self._reset_at = dt.datetime.fromtimestamp(
+                    int(reset), tz=dt.timezone.utc
+                )
+            except (TypeError, ValueError, OverflowError, OSError):
                 pass
 
 
