@@ -34,6 +34,12 @@ _RATE_LIMIT_BODY_PHRASES = (
     "secondary rate limit",
 )
 
+# Cap the Retry-After sleep at one primary reset cycle + buffer. A malformed
+# or absurd header value must not stall the daemon for hours — if the limit
+# really is that long, the retry-budget exhaustion path will raise loudly
+# rather than sleep silently.
+_RETRY_AFTER_CAP_S = 3700.0
+
 
 class GitHubError(Exception):
     """Non-retryable GitHub API error (4xx other than rate limit)."""
@@ -99,12 +105,12 @@ class GitHubClient:
             await self._http.aclose()
             self._http = None
 
-    def _base_headers(self) -> dict[str, str]:
+    def _base_headers(self, *, include_auth: bool = True) -> dict[str, str]:
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "application/vnd.github+json",
         }
-        if self._token:
+        if include_auth and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         return headers
 
@@ -116,11 +122,13 @@ class GitHubClient:
         url: str,
         *,
         headers_override: dict[str, str] | None = None,
+        include_auth: bool = True,
     ) -> str:
         return await self._retrying_request(
             "GET",
             url,
             headers_override=headers_override,
+            include_auth=include_auth,
             expect_json=False,
         )
 
@@ -131,6 +139,7 @@ class GitHubClient:
         *,
         params: dict[str, str] | None = None,
         headers_override: dict[str, str] | None = None,
+        include_auth: bool = True,
         expect_json: bool = True,
     ) -> Any:
         if self._http is None:
@@ -139,7 +148,12 @@ class GitHubClient:
             )
         # Merge override on top of defaults so callers can tweak a single
         # header (e.g. Accept for raw README) without losing Authorization.
-        headers = {**self._base_headers(), **(headers_override or {})}
+        # `include_auth=False` is used for non-API hosts (e.g. the github.com
+        # trending scrape) so we never leak a Bearer token off api.github.com.
+        headers = {
+            **self._base_headers(include_auth=include_auth),
+            **(headers_override or {}),
+        }
 
         for attempt in range(self.MAX_ATTEMPTS):
             await self.rate_limiter.acquire()
@@ -165,7 +179,10 @@ class GitHubClient:
             self.rate_limiter.update_from_headers(resp.headers)
 
             if _is_rate_limit_response(resp):
-                retry_after = self._parse_retry_after(resp.headers.get("Retry-After"))
+                retry_after = min(
+                    self._parse_retry_after(resp.headers.get("Retry-After")),
+                    _RETRY_AFTER_CAP_S,
+                )
                 log.info(
                     "github.rate_limited",
                     url=url_or_path,
@@ -242,8 +259,15 @@ class GitHubClient:
     async def fetch_trending_repositories(self, *, max_repos: int = 20) -> list[RepoCandidate]:
         # httpx.AsyncClient honors a fully-qualified URL even when base_url is
         # set, so we can pass GITHUB_TRENDING_URL directly through _request_text.
+        # Trending lives on github.com (an HTML host) rather than api.github.com,
+        # so we deliberately drop the Authorization header here — a Bearer token
+        # must never leave api.github.com — and request HTML content instead.
         try:
-            html = await self._request_text(GITHUB_TRENDING_URL)
+            html = await self._request_text(
+                GITHUB_TRENDING_URL,
+                headers_override={"Accept": "text/html,application/xhtml+xml"},
+                include_auth=False,
+            )
         except (GitHubError, *_RETRYABLE_NETWORK_ERRORS):
             log.info("github.trending_fetch_failed")
             return []

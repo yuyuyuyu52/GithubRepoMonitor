@@ -480,3 +480,48 @@ async def test_fetch_trending_repositories_skips_slug_on_non_404_detail_error(
     async with client:
         repos = await client.fetch_trending_repositories()
     assert [r.full_name for r in repos] == ["acme/gear"]
+
+
+@respx.mock
+async def test_retry_after_sleep_is_capped(client: GitHubClient, monkeypatch) -> None:
+    """A malformed/huge Retry-After must not stall the daemon for hours."""
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://api.github.com/repos/a/b").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "99999"}, text="rate limit"),
+            httpx.Response(200, json={"full_name": "a/b"}),
+        ]
+    )
+    async with client:
+        await client._request_json("/repos/a/b")
+    # Cap is 3700s; raw header wanted 99999s.
+    assert slept and slept[0] <= 3700.0
+
+
+@respx.mock
+async def test_fetch_trending_does_not_send_authorization(client: GitHubClient) -> None:
+    """Bearer token must not leak to github.com (non-API host)."""
+    trending_route = respx.get("https://github.com/trending").mock(
+        return_value=httpx.Response(200, text=TRENDING_HTML)
+    )
+    respx.get("https://api.github.com/repos/acme/widget").mock(
+        return_value=httpx.Response(200, json=REPO_DETAIL_WIDGET)
+    )
+    respx.get("https://api.github.com/repos/acme/gear").mock(
+        return_value=httpx.Response(
+            200,
+            json={**REPO_DETAIL_WIDGET, "full_name": "acme/gear", "html_url": "https://github.com/acme/gear"},
+        )
+    )
+    async with client:
+        await client.fetch_trending_repositories()
+    trending_req = trending_route.calls.last.request
+    assert "Authorization" not in trending_req.headers
+    assert trending_req.headers["User-Agent"] == "GithubRepoMonitor"
+    # HTML Accept should be set to something reasonable for a web page.
+    assert "text/html" in trending_req.headers["Accept"]
