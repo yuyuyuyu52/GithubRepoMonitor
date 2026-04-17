@@ -26,7 +26,11 @@ def heuristic_score_readme(
     # Score scales from ~4 (empty README, no matches) toward 10.
     score = min(10.0, 4.0 + completeness * 4.0 + len(matched))
 
-    summary = repo.description.strip() or "README 中未提供明确描述"
+    # Truncate to match ScoreResult.summary's max_length=140. Real GitHub
+    # descriptions can be up to 350 chars — the pre-truncation version
+    # would crash the heuristic path (the one that's supposed to be the
+    # LLM's safety net).
+    summary = (repo.description.strip() or "README 中未提供明确描述")[:140]
     reason = (
         f"匹配兴趣标签 {len(matched)} 项，README 完整度 {completeness:.0%}，"
         f"近 24 小时 star 增速 {repo.star_velocity_day:.1f}。"

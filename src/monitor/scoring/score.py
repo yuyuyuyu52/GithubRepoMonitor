@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from hashlib import sha256
-from typing import Awaitable, Callable, Protocol, Sequence
+from typing import Protocol, Sequence
 
 import aiosqlite
 import structlog
