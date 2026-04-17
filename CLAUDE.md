@@ -4,47 +4,56 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Run the monitor pipeline end-to-end:
+Install deps (src layout, editable):
 
 ```bash
-python src/github_repo_monitor.py
-python src/github_repo_monitor.py --config /absolute/path/config.json
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-Tests (stdlib `unittest` only — no pytest, no external deps):
+Run the daemon (M1 scaffolding: config load + DB migrate + wait for SIGTERM):
 
 ```bash
-# Full suite (must run from repo root so `src.github_repo_monitor` imports resolve)
-python -m unittest discover -s tests -v
-
-# Single test
-python -m unittest tests.test_monitor.RuleEngineTests.test_apply_respects_language_star_and_age
+python -m monitor
 ```
 
-There is no `requirements.txt`, `pyproject.toml`, or lint config — the code is pure Python 3 stdlib (urllib, sqlite3, json, dataclasses). Do not introduce third-party dependencies without discussing first.
+Legacy demo (still runnable until M4 replaces it):
+
+```bash
+python -m monitor.legacy
+```
+
+Tests (pytest, async enabled by pyproject config):
+
+```bash
+pytest                                    # all
+pytest tests/unit -v                      # unit only
+pytest tests/unit/test_db.py::test_fresh_db_runs_all_migrations -v  # single test
+```
 
 ## Architecture
 
-Single-file pipeline in `src/github_repo_monitor.py`. `MonitorPipeline.run()` orchestrates a fixed sequence; each stage is a separate class so tests can patch at boundaries:
+**Migration status (as of 2026-04-17):** The productized daemon lives in `src/monitor/`. The pre-productization single-file pipeline is preserved at `src/monitor/legacy.py` and will be replaced module-by-module over M2–M6. Both coexist during the transition; tests for `monitor.legacy` continue to pass.
 
-1. **`_collect_candidates`** — `GitHubClient.search_repositories` (keyword × language cross-product) + `fetch_trending_repositories` (scrapes `github.com/trending` HTML with a regex). Deduped into a `dict` keyed by `full_name`.
-2. **Dedupe** — `SQLiteStore.is_seen` against the `seen_repositories` table.
-3. **Coarse filter** — `RuleEngine.apply` drops repos failing `min_stars`, `languages`, or `max_repo_age_days`.
-4. **Enrichment** — `_enrich` calls Events, Issues, Contributors, and README endpoints, filling fields on the `RepoCandidate` dataclass in place.
-5. **Scoring** — `RuleEngine.score` (weighted combo of star velocity, fork ratio, freshness, contributor growth, issue response) + `ReadmeAnalyzer.analyze` (OpenAI if `OPENAI_API_KEY` is set, else heuristic on README sections + interest-tag hits). `final_score = rule_score*0.55 + llm_score*0.45`.
-6. **Push** — `TelegramNotifier.notify` (falls back to `print` if Telegram creds missing), then `SQLiteStore.mark_seen` persists metrics to `repository_metrics` and records the repo as seen.
+The productized pipeline orchestrated by `src/monitor/main.py` runs as a single async daemon that (in final form) holds three concurrent tasks: TG bot long-polling, APScheduler with four jobs (morning/evening digest, 30-min surge poll, weekly digest), and the pipeline executor guarded by an `asyncio.Lock` for non-reentrance. M1 only wires up config loading, DB migrations, structured logging, and SIGTERM handling — pipeline/bot/scheduler modules are stubs.
+
+Design spec: `docs/superpowers/specs/2026-04-17-github-repo-monitor-productization-design.md`.
+M1 plan: `docs/superpowers/plans/2026-04-17-m1-scaffolding.md`.
 
 ### Config resolution order
 
-`MonitorConfig.from_env()` reads env vars first; `load_config(--config)` then overlays JSON values onto matching dataclass fields via `setattr`. Env vars are the baseline; JSON wins when both are present.
+`Settings` (pydantic-settings) reads secrets and paths from env vars (`GITHUB_TOKEN`, `MINIMAX_API_KEY`, `TELEGRAM_*`, `MONITOR_DB_PATH`, `MONITOR_CONFIG`, `MONITOR_LOG_PATH`). `ConfigFile` (regular pydantic BaseModel, `extra="forbid"` so operator typos fail loud) is loaded from the JSON file pointed to by `MONITOR_CONFIG` and holds tuning knobs (keywords, thresholds, weights, model name). Code defaults apply where neither env nor file provides a value.
 
-### Conventions worth preserving
+### Schema migrations
 
-- **No external HTTP client** — all network calls use `urllib.request` with `User-Agent: GithubRepoMonitor` and optional `Authorization: Bearer <token>`. The `# nosec B310` comments silence bandit on `urlopen` and should stay.
-- **Timezone-aware datetimes everywhere.** `parse_dt` normalizes `Z`-suffixed and offset ISO strings to UTC; new date handling must go through it or produce `tzinfo=UTC` values, otherwise `RuleEngine.apply` comparisons against `datetime.now(tz.utc)` will raise.
-- **User-facing strings are Chinese** (Telegram messages, recommendation reasons, fallback text). Match that style when adding new output.
-- **SQLite schema changes** need `_init_schema` updates and a migration story — the DB file (`monitor.db`) is created lazily and not versioned.
+`src/monitor/db.py` tracks `SCHEMA_VERSION` (code constant) and the `schema_version` table. On startup `run_migrations` applies anything missing — idempotent, safe to re-run. Migration 001 creates the new table set and, if an old `seen_repositories` table exists (from the demo), copies rows into `pushed_items` (skipping any already present so partial-crash recovery doesn't duplicate) while adding `stars`/`forks` columns to `repository_metrics`.
 
-### Testing pattern
+### Logging
 
-`tests/test_monitor.py` uses `unittest.mock.patch.object` on pipeline instances to stub `_collect_candidates`, `_enrich`, `readme_analyzer.analyze`, and `notifier.notify` — so network is never hit. When adding pipeline stages, keep them patchable from the outside (methods on the pipeline or its collaborators, not free functions inside `run`).
+`src/monitor/logging_config.py` wires structlog → JSON → stdout + optional file. `SECRET_FIELDS` masks known-sensitive keys to `"***"` before render. `filter_by_level` short-circuits below-threshold messages; `format_exc_info` routes tracebacks through the JSON renderer.
+
+### Legacy conventions still worth preserving
+
+- Timezone-aware datetimes everywhere; `parse_dt` normalizes Z/offset ISO strings to UTC.
+- Chinese user-facing strings (carried into M4's Telegram renders).
+- No-external-HTTP-client was the demo rule; M2 replaces urllib with httpx across the new codebase.
