@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.github_repo_monitor import MonitorConfig, MonitorPipeline, RepoCandidate, RuleEngine, SQLiteStore, parse_dt
+from monitor.legacy import MonitorConfig, MonitorPipeline, RepoCandidate, RuleEngine, SQLiteStore, parse_dt
 
 
 class RuleEngineTests(unittest.TestCase):
