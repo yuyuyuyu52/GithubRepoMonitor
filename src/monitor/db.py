@@ -126,7 +126,6 @@ _MIGRATIONS: List[str] = [_MIGRATION_001_DDL, _MIGRATION_002_DDL]
 async def connect(db_path: Path) -> aiosqlite.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(db_path)
-    conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL;")
     await conn.execute("PRAGMA synchronous=NORMAL;")
     await conn.execute("PRAGMA foreign_keys=ON;")
