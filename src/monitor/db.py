@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 from pathlib import Path
 from typing import List, Literal
 
@@ -270,3 +271,114 @@ async def pushed_cooldown_state(
         last = last.replace(tzinfo=_dt.timezone.utc)
     delta = now - last
     return "expired" if delta.days >= digest_days else "active"
+
+
+async def get_cached_llm_score(
+    conn: aiosqlite.Connection,
+    full_name: str,
+    *,
+    readme_sha256: str,
+) -> "ScoreResult | None":
+    # Imported lazily to avoid a cycle at module import (scoring.types is a
+    # higher-level module than db).
+    from monitor.scoring.types import ScoreResult
+
+    async with conn.execute(
+        """
+        SELECT score, readme_completeness, summary, reason,
+               matched_interests, red_flags
+        FROM llm_score_cache
+        WHERE full_name = ? AND readme_sha256 = ?
+        LIMIT 1
+        """,
+        (full_name, readme_sha256),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return ScoreResult(
+        score=float(row[0]),
+        readme_completeness=float(row[1]),
+        summary=row[2] or "",
+        reason=row[3] or "",
+        matched_interests=json.loads(row[4]) if row[4] else [],
+        red_flags=json.loads(row[5]) if row[5] else [],
+    )
+
+
+async def put_cached_llm_score(
+    conn: aiosqlite.Connection,
+    full_name: str,
+    *,
+    readme_sha256: str,
+    result: "ScoreResult",
+    now: _dt.datetime | None = None,
+) -> None:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        """
+        INSERT INTO llm_score_cache (
+            full_name, readme_sha256, score, readme_completeness,
+            summary, reason, matched_interests, red_flags, cached_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (full_name, readme_sha256) DO UPDATE SET
+            score = excluded.score,
+            readme_completeness = excluded.readme_completeness,
+            summary = excluded.summary,
+            reason = excluded.reason,
+            matched_interests = excluded.matched_interests,
+            red_flags = excluded.red_flags,
+            cached_at = excluded.cached_at
+        """,
+        (
+            full_name,
+            readme_sha256,
+            result.score,
+            result.readme_completeness,
+            result.summary,
+            result.reason,
+            json.dumps(result.matched_interests),
+            json.dumps(result.red_flags),
+            now.isoformat(),
+        ),
+    )
+    await conn.commit()
+
+
+async def get_preference_profile(
+    conn: aiosqlite.Connection,
+) -> dict | None:
+    async with conn.execute(
+        "SELECT profile_text, generated_at, based_on_feedback_count "
+        "FROM preference_profile WHERE id = 1 LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "profile_text": row[0] or "",
+        "generated_at": row[1],
+        "based_on_feedback_count": int(row[2]) if row[2] is not None else 0,
+    }
+
+
+async def put_preference_profile(
+    conn: aiosqlite.Connection,
+    *,
+    profile_text: str,
+    generated_at: _dt.datetime,
+    based_on_feedback_count: int,
+) -> None:
+    await conn.execute(
+        """
+        INSERT INTO preference_profile
+            (id, profile_text, generated_at, based_on_feedback_count)
+        VALUES (1, ?, ?, ?)
+        ON CONFLICT (id) DO UPDATE SET
+            profile_text = excluded.profile_text,
+            generated_at = excluded.generated_at,
+            based_on_feedback_count = excluded.based_on_feedback_count
+        """,
+        (profile_text, generated_at.isoformat(), based_on_feedback_count),
+    )
+    await conn.commit()
