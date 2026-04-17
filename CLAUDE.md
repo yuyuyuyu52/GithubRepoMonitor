@@ -109,3 +109,21 @@ DB: migration 002 was from M4. M5 adds no schema changes, only DAOs: `start_run_
 `monitor.legacy` is gone. The productized pipeline is the single entry. Legacy tests at `tests/test_monitor.py` were deleted in the same commit.
 
 Operational note: the daemon uses `timezone="Asia/Shanghai"` for the scheduler. Morning digest at 08:00 Shanghai → 00:00 UTC; evening 20:00 Shanghai → 12:00 UTC.
+
+### M6 additions
+
+Deployment lives under `deploy/` + `scripts/`. Five systemd units: `monitor.service` (main daemon, hardened with `ProtectSystem=strict` + `ReadWritePaths` scoped to data/log dirs + `MemoryDenyWriteExecute`), `monitor-health.{service,timer}` (hourly probe), `monitor-backup.{service,timer}` (daily 03:15 UTC).
+
+`scripts/healthcheck.py` is stdlib-only by design — it must run even when the project venv is broken. It queries `run_log` for an `ok|partial` digest within 25h; on failure it POSTs a Telegram alert via the Bot API using `urllib.request`. Exits 0 unconditionally so the timer does not flap. The testable core is `check_last_digest(db_path, now) -> tuple[bool, str]`; 6 unit tests in `tests/unit/test_healthcheck.py` load the script via `importlib.util` against an in-memory run_log.
+
+`scripts/backup.sh` uses `sqlite3 .backup` (online backup API, safe with concurrent writers) + gzip + prune-by-mtime. Keeps 14 days by default via `MONITOR_BACKUP_KEEP_DAYS`.
+
+`deploy/install.sh` is the idempotent bootstrap. Creates the `monitor` system user (`/usr/sbin/nologin`), installs code to `/opt/monitor` (rsync with `--delete`, excluding `.venv`/`tests`/`__pycache__`), builds a venv, `pip install -e`, seeds `/etc/monitor/{monitor.env,config.json}` from `deploy/templates/` only when absent, installs unit + logrotate files, `daemon-reload`. Safe to re-run on every upgrade.
+
+`deploy/logrotate/monitor`: weekly, keep 8, `copytruncate` (structlog appends, no signal handshake needed).
+
+`deploy/README.md` is the operator runbook — install / upgrade / inspect / restore-from-backup / rollback / uninstall.
+
+Paths: code `/opt/monitor`, data+backups `/var/lib/monitor`, logs `/var/log/monitor`, config `/etc/monitor`. Non-root `monitor` user.
+
+Not covered by M6: LLM-consecutive-failure alerting (the design mentioned it but implementing it cleanly needs a dedicated counter table — digest failures that fall back to heuristic currently land as `status=ok`, so run_log alone doesn't see the signal). Left as future work; the 25h-stale-digest alert catches daemon-level outages, which is the bigger risk.
