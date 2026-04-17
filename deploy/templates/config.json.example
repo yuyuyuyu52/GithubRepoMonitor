@@ -1,0 +1,20 @@
+{
+  "keywords": ["ai agent", "llm agent", "rag"],
+  "languages": ["Python", "TypeScript", "Rust", "Go"],
+  "min_stars": 50,
+  "max_repo_age_days": 3650,
+  "top_n": 10,
+  "digest_cooldown_days": 7,
+  "preference_refresh_every": 10,
+  "llm_model": "minimax-01",
+  "llm_base_url": "https://api.minimax.io/anthropic",
+  "weights": {
+    "rule": 0.4,
+    "llm": 0.6
+  },
+  "surge": {
+    "velocity_multiple": 3.0,
+    "velocity_absolute_day": 20.0,
+    "cooldown_days": 3
+  }
+}
