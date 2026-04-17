@@ -22,7 +22,7 @@ async def _make_state(tmp_db: Path) -> DaemonState:
     return await DaemonState.load(conn=conn, config=ConfigFile())
 
 
-async def test_create_application_registers_five_commands(tmp_db: Path) -> None:
+async def test_create_application_registers_six_commands(tmp_db: Path) -> None:
     state = await _make_state(tmp_db)
     pref_builder = SimpleNamespace(regenerate=AsyncMock())
 
@@ -37,6 +37,7 @@ async def test_create_application_registers_five_commands(tmp_db: Path) -> None:
         pref_builder=pref_builder,
         refresh_threshold=5,
         config_reloader=reloader,
+        digest_trigger=AsyncMock(),
     )
 
     command_names: list[str] = []
@@ -45,7 +46,7 @@ async def test_create_application_registers_five_commands(tmp_db: Path) -> None:
             if isinstance(handler, CommandHandler):
                 command_names.extend(sorted(handler.commands))
 
-    assert sorted(command_names) == ["pause", "reload", "resume", "status", "top"]
+    assert sorted(command_names) == ["digest_now", "pause", "reload", "resume", "status", "top"]
     await state.conn.close()
 
 
@@ -64,6 +65,7 @@ async def test_create_application_registers_callback_query_handler(tmp_db: Path)
         pref_builder=pref_builder,
         refresh_threshold=5,
         config_reloader=reloader,
+        digest_trigger=AsyncMock(),
     )
 
     has_callback_handler = False
