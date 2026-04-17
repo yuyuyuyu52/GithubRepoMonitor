@@ -3,7 +3,7 @@ import pytest
 import respx
 
 from monitor.clients.github import GitHubClient, GitHubError
-from tests.fixtures.github_payloads import REPO_DETAIL_WIDGET, SEARCH_REPOSITORIES_OK
+from tests.fixtures.github_payloads import REPO_DETAIL_WIDGET, SEARCH_REPOSITORIES_OK, TRENDING_HTML
 
 
 @pytest.fixture
@@ -282,3 +282,61 @@ async def test_fetch_repository_detail_returns_none_on_404(client: GitHubClient)
     async with client:
         repo = await client.fetch_repository_detail("acme/missing")
     assert repo is None
+
+
+@respx.mock
+async def test_fetch_trending_repositories_scrapes_html_and_fetches_details(
+    client: GitHubClient,
+) -> None:
+    respx.get("https://github.com/trending").mock(
+        return_value=httpx.Response(200, text=TRENDING_HTML)
+    )
+    respx.get("https://api.github.com/repos/acme/widget").mock(
+        return_value=httpx.Response(200, json=REPO_DETAIL_WIDGET)
+    )
+    respx.get("https://api.github.com/repos/acme/gear").mock(
+        return_value=httpx.Response(
+            200,
+            json={**REPO_DETAIL_WIDGET, "full_name": "acme/gear", "html_url": "https://github.com/acme/gear"},
+        )
+    )
+    async with client:
+        repos = await client.fetch_trending_repositories()
+    names = [r.full_name for r in repos]
+    # Duplicates in HTML are deduped; order preserved.
+    assert names == ["acme/widget", "acme/gear"]
+
+
+@respx.mock
+async def test_fetch_trending_repositories_skips_404_details(client: GitHubClient) -> None:
+    respx.get("https://github.com/trending").mock(
+        return_value=httpx.Response(200, text=TRENDING_HTML)
+    )
+    respx.get("https://api.github.com/repos/acme/widget").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    respx.get("https://api.github.com/repos/acme/gear").mock(
+        return_value=httpx.Response(
+            200,
+            json={**REPO_DETAIL_WIDGET, "full_name": "acme/gear", "html_url": "https://github.com/acme/gear"},
+        )
+    )
+    async with client:
+        repos = await client.fetch_trending_repositories()
+    assert [r.full_name for r in repos] == ["acme/gear"]
+
+
+@respx.mock
+async def test_fetch_trending_repositories_returns_empty_on_html_failure(
+    client: GitHubClient, monkeypatch
+) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://github.com/trending").mock(
+        return_value=httpx.Response(503, text="unavailable")
+    )
+    async with client:
+        repos = await client.fetch_trending_repositories()
+    assert repos == []

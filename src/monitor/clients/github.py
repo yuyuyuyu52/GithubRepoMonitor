@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import datetime as dt
 from typing import Any
 
@@ -15,6 +16,8 @@ log = structlog.get_logger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
 USER_AGENT = "GithubRepoMonitor"
+GITHUB_TRENDING_URL = "https://github.com/trending"
+_TRENDING_SLUG_RE = re.compile(r'href="/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)"')
 
 _RETRYABLE_NETWORK_ERRORS = (
     httpx.TimeoutException,
@@ -235,6 +238,28 @@ class GitHubClient:
         if not isinstance(payload, dict):
             return None
         return _repo_from_api(payload)
+
+    async def fetch_trending_repositories(self, *, max_repos: int = 20) -> list[RepoCandidate]:
+        # httpx.AsyncClient honors a fully-qualified URL even when base_url is
+        # set, so we can pass GITHUB_TRENDING_URL directly through _request_text.
+        try:
+            html = await self._request_text(GITHUB_TRENDING_URL)
+        except (GitHubError, *_RETRYABLE_NETWORK_ERRORS):
+            log.info("github.trending_fetch_failed")
+            return []
+
+        seen: set[str] = set()
+        repos: list[RepoCandidate] = []
+        for slug in _TRENDING_SLUG_RE.findall(html):
+            if slug in seen:
+                continue
+            seen.add(slug)
+            detail = await self.fetch_repository_detail(slug)
+            if detail is not None:
+                repos.append(detail)
+            if len(repos) >= max_repos:
+                break
+        return repos
 
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
