@@ -122,7 +122,7 @@ def test_llm_score_error_carries_reason() -> None:
 - [ ] **Step 2: Verify test fails**
 
 ```bash
-cd /Users/Zhuanz/Documents/GithubRepoMonitor
+cd <repo-root>
 source .venv/bin/activate
 pytest tests/unit/test_scoring_types.py -v 2>&1 | tail -10
 ```
@@ -682,7 +682,7 @@ Expected: ImportError on the new DAO symbols.
 
 - [ ] **Step 3: Append DAOs to `src/monitor/db.py`**
 
-First, add `import json` to the existing top-of-file import block in `/Users/Zhuanz/Documents/GithubRepoMonitor/src/monitor/db.py` (keep it alphabetically grouped with the other stdlib imports: `import datetime as _dt`, `import json`, `from pathlib import Path`, etc.). Do NOT add any mid-file imports.
+First, add `import json` to the existing top-of-file import block in `src/monitor/db.py` (keep it alphabetically grouped with the other stdlib imports: `import datetime as _dt`, `import json`, `from pathlib import Path`, etc.). Do NOT add any mid-file imports.
 
 Then append to the bottom of `src/monitor/db.py` (after `pushed_cooldown_state`):
 

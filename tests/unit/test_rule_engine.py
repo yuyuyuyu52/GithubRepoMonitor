@@ -81,7 +81,7 @@ def test_score_is_a_weighted_combination_bounded_to_10() -> None:
     assert 0.0 <= score <= 10.0
 
 
-def test_score_zero_when_all_signals_flat() -> None:
+def test_score_is_bounded_when_all_signals_flat() -> None:
     engine = _engine()
     repo = _repo(
         star_velocity_day=0.0,
