@@ -140,6 +140,36 @@ class LLMClient:
             )
             raise LLMScoreError(str(exc), cause="schema_mismatch") from exc
 
+    async def generate_text(self, prompt: str) -> str:
+        """Free-form text completion — used by PreferenceBuilder to summarize
+        recent feedback into a preference profile. No tool use; we expect a
+        plain text-block response.
+
+        Raises LLMScoreError on SDK failure or when no text block is returned
+        so the caller can decide whether to ignore (preference regen is
+        best-effort) or log and continue.
+        """
+        try:
+            resp = await self._client.messages.create(
+                model=self._model,
+                max_tokens=self._max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.warning("llm.generate_text_sdk_error", error=str(exc))
+            raise LLMScoreError(str(exc), cause="sdk_error") from exc
+
+        _log_usage(resp, "generate_text")
+        content = getattr(resp, "content", None) or []
+        for block in content:
+            if getattr(block, "type", None) == "text":
+                text = getattr(block, "text", None)
+                if isinstance(text, str):
+                    return text
+        raise LLMScoreError(
+            "no text block in generate_text response", cause="missing_text"
+        )
+
     @staticmethod
     def _build_system(preference_profile: str | None) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = [
