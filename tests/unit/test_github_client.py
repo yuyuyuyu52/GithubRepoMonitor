@@ -6,6 +6,7 @@ from monitor.clients.github import GitHubClient, GitHubError
 from tests.fixtures.github_payloads import (
     CONTRIBUTORS_PAYLOAD,
     ISSUES_CLOSED_PAYLOAD,
+    README_RAW,
     REPO_DETAIL_WIDGET,
     SEARCH_REPOSITORIES_OK,
     TRENDING_HTML,
@@ -417,3 +418,35 @@ async def test_fetch_issue_response_hours_returns_zero_when_no_real_issues(
     async with client:
         hours = await client.fetch_issue_response_hours("a/b")
     assert hours == 0.0
+
+
+@respx.mock
+async def test_fetch_readme_returns_raw_text(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/readme").mock(
+        return_value=httpx.Response(200, text=README_RAW)
+    )
+    async with client:
+        text = await client.fetch_readme("a/b")
+    assert text == README_RAW
+    assert "## Install" in text
+
+
+@respx.mock
+async def test_fetch_readme_sends_raw_accept_header(client: GitHubClient) -> None:
+    route = respx.get("https://api.github.com/repos/a/b/readme").mock(
+        return_value=httpx.Response(200, text=README_RAW)
+    )
+    async with client:
+        await client.fetch_readme("a/b")
+    req = route.calls.last.request
+    assert req.headers["Accept"] == "application/vnd.github.raw+json"
+
+
+@respx.mock
+async def test_fetch_readme_returns_empty_on_missing_readme(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/readme").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    async with client:
+        text = await client.fetch_readme("a/b")
+    assert text == ""

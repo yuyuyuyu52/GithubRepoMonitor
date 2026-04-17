@@ -362,6 +362,18 @@ class GitHubClient:
             return 0.0
         return sum(intervals) / len(intervals)
 
+    async def fetch_readme(self, full_name: str) -> str:
+        """Fetch raw README text. Returns empty string on 404."""
+        try:
+            return await self._request_text(
+                f"/repos/{full_name}/readme",
+                headers_override={"Accept": "application/vnd.github.raw+json"},
+            )
+        except GitHubError as exc:
+            if exc.status_code == 404:
+                return ""
+            raise
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:
