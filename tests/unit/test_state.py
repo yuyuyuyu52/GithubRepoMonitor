@@ -60,3 +60,18 @@ async def test_daemon_state_reload_config_replaces_live_reference(tmp_db: Path) 
     # Prior reference unchanged
     assert config_a.keywords == ["agent"]
     await conn.close()
+
+
+async def test_daemon_state_has_digest_lock(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    state = await DaemonState.load(conn=conn, config=ConfigFile())
+
+    import asyncio
+    assert isinstance(state.digest_lock, asyncio.Lock)
+    # Not held initially
+    assert not state.digest_lock.locked()
+    async with state.digest_lock:
+        assert state.digest_lock.locked()
+    assert not state.digest_lock.locked()
+    await conn.close()
