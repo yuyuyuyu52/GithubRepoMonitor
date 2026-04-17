@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import datetime as _dt
 from pathlib import Path
-from typing import List
+from typing import List, Literal
 
 import aiosqlite
 
@@ -205,10 +206,6 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
             """,
             (full_name, pushed_at, last_score),
         )
-
-
-import datetime as _dt
-from typing import Literal
 
 
 BlacklistKind = Literal["repo", "author", "topic"]
