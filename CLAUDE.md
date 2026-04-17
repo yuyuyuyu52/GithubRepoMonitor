@@ -11,16 +11,10 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-Run the daemon (M1 scaffolding: config load + DB migrate + wait for SIGTERM):
+Run the daemon:
 
 ```bash
 python -m monitor
-```
-
-Legacy demo (still runnable until M4 replaces it):
-
-```bash
-python -m monitor.legacy
 ```
 
 Tests (pytest, async enabled by pyproject config):
@@ -33,9 +27,7 @@ pytest tests/unit/test_db.py::test_fresh_db_runs_all_migrations -v  # single tes
 
 ## Architecture
 
-**Migration status (as of 2026-04-17):** The productized daemon lives in `src/monitor/`. The pre-productization single-file pipeline is preserved at `src/monitor/legacy.py` and will be replaced module-by-module over M2–M6. Both coexist during the transition; tests for `monitor.legacy` continue to pass.
-
-The productized pipeline orchestrated by `src/monitor/main.py` runs as a single async daemon that (in final form) holds three concurrent tasks: TG bot long-polling, APScheduler with four jobs (morning/evening digest, 30-min surge poll, weekly digest), and the pipeline executor guarded by an `asyncio.Lock` for non-reentrance. M1 only wires up config loading, DB migrations, structured logging, and SIGTERM handling — pipeline/bot/scheduler modules are stubs.
+The productized pipeline orchestrated by `src/monitor/main.py` runs as a single async daemon holding three concurrent concerns: TG bot long-polling, APScheduler with four jobs (morning/evening digest, 30-min surge poll, weekly digest), and the pipeline executor guarded by `DaemonState.digest_lock` for non-reentrance.
 
 Design spec: `docs/superpowers/specs/2026-04-17-github-repo-monitor-productization-design.md`.
 M1 plan: `docs/superpowers/plans/2026-04-17-m1-scaffolding.md`.
@@ -97,3 +89,23 @@ Tests use DI-mocked Anthropic SDK (no respx for LLM, we stub the `anthropic_clie
 DB additions: migration 002 creates `daemon_state`. Seven new DAOs in `db.py` — `get_daemon_state`, `set_daemon_paused`, `insert_pushed_item`, `update_pushed_tg_message_id`, `record_user_feedback`, `count_feedback_since_last_profile`, `get_recent_pushes`, `get_latest_run_logs`. Tests continue the DI-mocked pattern — no real Telegram API calls in the suite.
 
 M4 does NOT yet fire push messages on a schedule. That is M5's scheduler task: it will call `score_repo`, then `insert_pushed_item`, then `render_repo_message`, then `bot.send_message(chat_id=..., text=text, reply_markup=markup)`, then `update_pushed_tg_message_id(id, msg_id)`. M4 provides all the building blocks.
+
+### M5 additions
+
+`src/monitor/scheduler.py` hosts the `AsyncIOScheduler` with four jobs (`digest_morning` @ 08:00, `digest_evening` @ 20:00, `surge_poll` every 30 min, `weekly_digest` Sunday 21:00). Each job is guarded by `DaemonState.digest_lock` so two jobs (or `/digest_now`) cannot overlap; an overlapping trigger logs "skipped" and exits.
+
+`src/monitor/pipeline/` grows three orchestrators: `digest.py` (`run_digest` collect→filter→enrich→score→push with `run_log` + top_n + pause guard), `surge.py` (`run_surge` re-surfaces cooldown-expired repos whose events velocity crossed the `surge.velocity_multiple × previous` AND `surge.velocity_absolute_day` thresholds), and `weekly.py` (pure SQL aggregate of pushed_items + user_feedback + run_log + preference_profile into a text block for the Sunday push).
+
+`src/monitor/pipeline/filter.py` is the coarse filter stage used by `run_digest`: rule engine + blacklist (repo/author/topic) + pushed_cooldown_state, all in one pass before enrichment.
+
+`src/monitor/bot/push.py` centralizes the push send flow (`insert_pushed_item` → `render_repo_message` → `bot.send_message` → `update_pushed_tg_message_id`). Called by both `run_digest` and `run_surge`; surge adds a 🔥 prefix.
+
+`src/monitor/bot/commands.py` grows `/digest_now` — it attempts to acquire `state.digest_lock` and replies busy if held (no queueing).
+
+DB: migration 002 was from M4. M5 adds no schema changes, only DAOs: `start_run_log` / `finish_run_log` for run accounting; `upsert_repositories` + `upsert_repository_metrics` for post-enrich persistence; `get_latest_metric` + `get_surge_candidates` for surge; `get_pushed_since` + `get_feedback_counts_since` for the weekly aggregate.
+
+`src/monitor/main.py` now opens a `GitHubClient` for the daemon lifetime, builds `LLMClient` (if keyed), constructs all four pre-bound scheduler callables, and installs the scheduler alongside the bot. Shutdown order is scheduler → bot → conn, each step individually guarded.
+
+`monitor.legacy` is gone. The productized pipeline is the single entry. Legacy tests at `tests/test_monitor.py` were deleted in the same commit.
+
+Operational note: the daemon uses `timezone="Asia/Shanghai"` for the scheduler. Morning digest at 08:00 Shanghai → 00:00 UTC; evening 20:00 Shanghai → 12:00 UTC.

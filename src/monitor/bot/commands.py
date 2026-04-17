@@ -83,3 +83,32 @@ async def handle_reload(
         return
     state.reload_config(new_config)
     await update.message.reply_text("✅ 配置已重载")
+
+
+DigestTrigger = Callable[[], Awaitable[dict]]
+
+
+async def handle_digest_now(
+    update: Any,
+    *,
+    state: DaemonState,
+    digest_trigger: DigestTrigger,
+) -> None:
+    """Trigger an immediate digest run. Non-reentrant via state.digest_lock:
+    if another digest is in-flight, reply 'busy' rather than queue."""
+    lock = state.digest_lock
+    if lock.locked():
+        await update.message.reply_text("⏳ digest already running — try again later.")
+        return
+    async with lock:
+        try:
+            stats = await digest_trigger()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("digest_now.failed")
+            await update.message.reply_text(f"❌ digest_now 失败: {exc}")
+            return
+    pushed = stats.get("repos_pushed", 0)
+    scanned = stats.get("repos_scanned", 0)
+    await update.message.reply_text(
+        f"✅ digest_now 完成：扫描 {scanned}，推送 {pushed}"
+    )

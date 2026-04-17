@@ -31,6 +31,7 @@ def create_application(
     pref_builder: Any,
     refresh_threshold: int,
     config_reloader: ConfigReloader,
+    digest_trigger: Any,
 ) -> Application:
     """Build a PTB Application with all M4 handlers registered.
 
@@ -84,6 +85,17 @@ def create_application(
             _wrap(
                 lambda update, _ctx: commands.handle_reload(
                     update, state=state, config_reloader=config_reloader
+                )
+            ),
+            filters=chat_filter,
+        )
+    )
+    app.add_handler(
+        CommandHandler(
+            "digest_now",
+            _wrap(
+                lambda update, _ctx: commands.handle_digest_now(
+                    update, state=state, digest_trigger=digest_trigger
                 )
             ),
             filters=chat_filter,

@@ -70,3 +70,28 @@ async def test_main_logs_telegram_disabled_when_no_credentials(tmp_path: Path) -
             except asyncio.TimeoutError:
                 proc.kill()
                 await proc.wait()
+
+
+async def test_main_logs_scheduler_disabled_when_no_telegram_credentials(tmp_path: Path) -> None:
+    """Without TG creds the scheduler has no destination, so both the bot
+    AND the scheduler are skipped. We already assert telegram.disabled in
+    the prior test; this one asserts the scheduler follows."""
+    proc = await _start_process(tmp_path)
+    try:
+        scheduler_disabled_seen = False
+        for _ in range(50):
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+            if not line:
+                break
+            if b"scheduler.disabled" in line:
+                scheduler_disabled_seen = True
+                break
+        assert scheduler_disabled_seen, "daemon should log scheduler.disabled when TG is disabled"
+    finally:
+        if proc.returncode is None:
+            proc.send_signal(signal.SIGTERM)
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
