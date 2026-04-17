@@ -81,21 +81,20 @@ async def run_surge(
             if not (ratio_ok and absolute_ok):
                 continue
 
-            # Reconstitute RepoCandidate from the repositories row.
-            repo = RepoCandidate(
-                full_name=full_name,
-                html_url=cand["html_url"] or f"https://github.com/{full_name}",
-                description=cand["description"],
-                language=cand["language"],
-                stars=0,  # enrich does not refresh stars; carry 0 is fine for scoring
-                forks=0,
-                created_at=_parse_iso_utc(cand["created_at"]) or now,
-                pushed_at=now,
-                owner_login=cand["owner_login"],
-                topics=list(cand["topics"]),
-                star_velocity_day=day_v_new,
-                star_velocity_week=week_v_new,
-            )
+            # Fetch fresh repo detail so stars/forks/pushed_at are real.
+            # Reconstructing from the stale `repositories` row with stars=0
+            # poisons the metrics time series and makes freshness_days=0,
+            # inflating rule_score.freshness_score to its 10.0 ceiling.
+            try:
+                repo = await github_client.fetch_repository_detail(full_name)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("surge.detail_failed", repo=full_name, error=str(exc))
+                stats["errors"].append(full_name)
+                continue
+            if repo is None:
+                continue
+            repo.star_velocity_day = day_v_new
+            repo.star_velocity_week = week_v_new
             errors = await enrich_repo(github_client, repo)
             if errors:
                 stats["errors"].extend(e.step for e in errors)
@@ -123,18 +122,3 @@ async def run_surge(
             now=dt.datetime.now(dt.timezone.utc),
         )
     return stats
-
-
-def _parse_iso_utc(value: str | None) -> dt.datetime | None:
-    if not value:
-        return None
-    normalized = value.strip()
-    if normalized.endswith("Z"):
-        normalized = normalized[:-1] + "+00:00"
-    try:
-        parsed = dt.datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.astimezone(dt.timezone.utc)

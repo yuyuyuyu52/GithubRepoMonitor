@@ -49,6 +49,7 @@ class FakeClient:
         self.contributors_results: dict[str, tuple[int, int]] = {}
         self.issues_results: dict[str, float] = {}
         self.readme_results: dict[str, str] = {}
+        self.detail_results: dict[str, RepoCandidate] = {}
 
     async def fetch_repo_events(self, full_name: str):
         return self.events_results.get(full_name, (0.0, 0.0))
@@ -61,6 +62,9 @@ class FakeClient:
 
     async def fetch_readme(self, full_name: str):
         return self.readme_results.get(full_name, "# title\n## install")
+
+    async def fetch_repository_detail(self, full_name: str):
+        return self.detail_results.get(full_name)
 
 
 def _fake_bot_app() -> SimpleNamespace:
@@ -90,6 +94,7 @@ async def test_run_surge_triggers_when_velocity_multiplies(tmp_db: Path) -> None
 
     client = FakeClient()
     client.events_results = {repo.full_name: (25.0, 10.0)}  # surge: new=25, old=5 → 5x, >20
+    client.detail_results = {repo.full_name: repo}
 
     config = ConfigFile()  # surge defaults: multiple=3.0, absolute=20.0, cooldown=3
     state = await DaemonState.load(conn=conn, config=config)

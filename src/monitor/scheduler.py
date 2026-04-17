@@ -32,6 +32,7 @@ def create_scheduler(
     deps (github_client, llm_score_fn, etc.) without the scheduler
     itself needing to."""
     scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    tz = scheduler.timezone
 
     async def _guarded_digest() -> None:
         if state.digest_lock.locked():
@@ -65,28 +66,28 @@ def create_scheduler(
 
     scheduler.add_job(
         _guarded_digest,
-        CronTrigger(hour=8, minute=0),
+        CronTrigger(hour=8, minute=0, timezone=tz),
         id="digest_morning",
         name="Morning digest",
         max_instances=1,
     )
     scheduler.add_job(
         _guarded_digest,
-        CronTrigger(hour=20, minute=0),
+        CronTrigger(hour=20, minute=0, timezone=tz),
         id="digest_evening",
         name="Evening digest",
         max_instances=1,
     )
     scheduler.add_job(
         _guarded_surge,
-        IntervalTrigger(minutes=30),
+        IntervalTrigger(minutes=30, timezone=tz),
         id="surge_poll",
         name="Surge poll",
         max_instances=1,
     )
     scheduler.add_job(
         _guarded_weekly,
-        CronTrigger(day_of_week="sun", hour=21, minute=0),
+        CronTrigger(day_of_week="sun", hour=21, minute=0, timezone=tz),
         id="weekly_digest",
         name="Weekly digest",
         max_instances=1,

@@ -60,14 +60,15 @@ async def build_weekly_digest(
 
     # Run statistics
     if recent_runs:
-        ok_count = sum(1 for r in recent_runs if r.get("status") == "ok")
-        failed_count = sum(1 for r in recent_runs if r.get("status") == "failed")
-        surge_count = sum(1 for r in recent_runs if (r.get("kind") or "").startswith("surge"))
+        surge_runs = [r for r in recent_runs if (r.get("kind") or "").startswith("surge")]
+        digest_runs = [r for r in recent_runs if not (r.get("kind") or "").startswith("surge")]
+        digest_ok_count = sum(1 for r in digest_runs if r.get("status") == "ok")
+        digest_failed_count = sum(1 for r in digest_runs if r.get("status") == "failed")
         lines.append("")
         lines.append("📋 运行统计")
         lines.append(
-            f"  digest {ok_count}/{len(recent_runs) - surge_count}，"
-            f"surge {surge_count} 次，失败 {failed_count}"
+            f"  digest {digest_ok_count}/{len(digest_runs)}，"
+            f"surge {len(surge_runs)} 次，失败 {digest_failed_count}"
         )
 
     return "\n".join(lines)
