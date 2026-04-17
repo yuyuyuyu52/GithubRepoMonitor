@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Protocol, Sequence
 
 import structlog
@@ -28,7 +29,8 @@ async def collect_candidates(
     """Run search across keyword x language + trending. Dedupe by full_name.
 
     Failures in individual search pairs or in trending are logged and swallowed;
-    the caller still gets whatever succeeded.
+    the caller still gets whatever succeeded. asyncio.CancelledError is
+    re-raised explicitly so a scheduler-driven shutdown propagates promptly.
     """
     collected: dict[str, RepoCandidate] = {}
 
@@ -38,6 +40,8 @@ async def collect_candidates(
                 repos = await client.search_repositories(
                     keyword=keyword, language=language, min_stars=min_stars
                 )
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:  # noqa: BLE001 - we log and proceed
                 log.warning(
                     "collect.search_failed",
@@ -51,6 +55,8 @@ async def collect_candidates(
 
     try:
         trending = await client.fetch_trending_repositories()
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001
         log.warning("collect.trending_failed", error=str(exc))
         trending = []

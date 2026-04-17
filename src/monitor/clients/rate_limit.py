@@ -35,8 +35,8 @@ class RateLimiter:
 
         Holds the lock across ``await asyncio.sleep`` so that exactly one
         coroutine sleeps per rate-limit window — the N-1 queued coroutines
-        drain serially after reset instead of thundering-herding at the
-        same instant.
+        drain serially after reset instead of forming a thundering herd at
+        the same instant.
 
         State is NOT re-checked after waking: if another coroutine updated
         the headers via ``update_from_headers`` during the sleep, those
@@ -54,7 +54,7 @@ class RateLimiter:
                 return
             await asyncio.sleep(min(wait_s, _MAX_SLEEP_S))
 
-    def update_from_headers(self, headers: Mapping[str, str]) -> None:
+    def update_from_headers(self, headers: Mapping[str, object]) -> None:
         # GitHub returns integer epoch strings. Float formats, non-strings, and
         # out-of-range / huge epoch values are all silently ignored rather than
         # crashing the caller — a broken header leaves the limiter state on its
