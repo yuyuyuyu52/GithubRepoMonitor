@@ -367,13 +367,14 @@ async def test_fetch_repo_events_counts_watch_events(client: GitHubClient, monke
 
 
 @respx.mock
-async def test_fetch_repo_events_returns_zeros_on_http_error(client: GitHubClient) -> None:
+async def test_fetch_repo_events_raises_on_http_error(client: GitHubClient) -> None:
     respx.get("https://api.github.com/repos/a/b/events").mock(
         return_value=httpx.Response(404, json={"message": "Not Found"})
     )
     async with client:
-        day, week = await client.fetch_repo_events("a/b")
-    assert (day, week) == (0.0, 0.0)
+        with pytest.raises(GitHubError) as exc_info:
+            await client.fetch_repo_events("a/b")
+    assert exc_info.value.status_code == 404
 
 
 @respx.mock
@@ -388,13 +389,14 @@ async def test_fetch_contributors_growth(client: GitHubClient) -> None:
 
 
 @respx.mock
-async def test_fetch_contributors_growth_returns_zero_on_error(client: GitHubClient) -> None:
+async def test_fetch_contributors_growth_raises_on_error(client: GitHubClient) -> None:
     respx.get("https://api.github.com/repos/a/b/contributors").mock(
         return_value=httpx.Response(403, json={"message": "Repository access blocked"})
     )
     async with client:
-        total, growth = await client.fetch_contributors_growth("a/b")
-    assert (total, growth) == (0, 0)
+        with pytest.raises(GitHubError) as exc_info:
+            await client.fetch_contributors_growth("a/b")
+    assert exc_info.value.status_code == 403
 
 
 @respx.mock

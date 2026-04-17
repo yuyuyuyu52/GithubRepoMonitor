@@ -266,13 +266,13 @@ class GitHubClient:
 
         star_velocity_day = WatchEvent count within last 24h.
         star_velocity_week = WatchEvent count within last 7d / 7.
+
+        Raises GitHubError on API failure so callers (e.g. enrich_repo) can
+        decide whether to record an EnrichError or swallow.
         """
-        try:
-            payload = await self._request_json(
-                f"/repos/{full_name}/events", params={"per_page": "100"}
-            )
-        except GitHubError:
-            return (0.0, 0.0)
+        payload = await self._request_json(
+            f"/repos/{full_name}/events", params={"per_page": "100"}
+        )
         if not isinstance(payload, list):
             return (0.0, 0.0)
 
@@ -302,13 +302,13 @@ class GitHubClient:
 
         new_contributors_approx = count of contributors with <= 1 contribution,
         used as a cheap proxy for recent joiners.
+
+        Raises GitHubError on API failure so callers (e.g. enrich_repo) can
+        decide whether to record an EnrichError or swallow.
         """
-        try:
-            payload = await self._request_json(
-                f"/repos/{full_name}/contributors", params={"per_page": "100"}
-            )
-        except GitHubError:
-            return (0, 0)
+        payload = await self._request_json(
+            f"/repos/{full_name}/contributors", params={"per_page": "100"}
+        )
         if not isinstance(payload, list):
             return (0, 0)
         total = len(payload)
@@ -325,19 +325,20 @@ class GitHubClient:
 
     async def fetch_issue_response_hours(self, full_name: str) -> float:
         """Mean hours between open and close of the last up-to-10 real issues
-        (PRs excluded) that were closed."""
-        try:
-            payload = await self._request_json(
-                f"/repos/{full_name}/issues",
-                params={
-                    "state": "closed",
-                    "sort": "updated",
-                    "direction": "desc",
-                    "per_page": "30",
-                },
-            )
-        except GitHubError:
-            return 0.0
+        (PRs excluded) that were closed.
+
+        Raises GitHubError on API failure so callers (e.g. enrich_repo) can
+        decide whether to record an EnrichError or swallow.
+        """
+        payload = await self._request_json(
+            f"/repos/{full_name}/issues",
+            params={
+                "state": "closed",
+                "sort": "updated",
+                "direction": "desc",
+                "per_page": "30",
+            },
+        )
         if not isinstance(payload, list):
             return 0.0
 
