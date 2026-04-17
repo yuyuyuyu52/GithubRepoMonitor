@@ -4,6 +4,8 @@ import respx
 
 from monitor.clients.github import GitHubClient, GitHubError
 from tests.fixtures.github_payloads import (
+    CONTRIBUTORS_PAYLOAD,
+    ISSUES_CLOSED_PAYLOAD,
     REPO_DETAIL_WIDGET,
     SEARCH_REPOSITORIES_OK,
     TRENDING_HTML,
@@ -371,3 +373,47 @@ async def test_fetch_repo_events_returns_zeros_on_http_error(client: GitHubClien
     async with client:
         day, week = await client.fetch_repo_events("a/b")
     assert (day, week) == (0.0, 0.0)
+
+
+@respx.mock
+async def test_fetch_contributors_growth(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/contributors").mock(
+        return_value=httpx.Response(200, json=CONTRIBUTORS_PAYLOAD)
+    )
+    async with client:
+        total, growth = await client.fetch_contributors_growth("a/b")
+    assert total == 4
+    assert growth == 2  # alice (120) and bob (8) are established; carol+dave are new
+
+
+@respx.mock
+async def test_fetch_contributors_growth_returns_zero_on_error(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/contributors").mock(
+        return_value=httpx.Response(403, json={"message": "Repository access blocked"})
+    )
+    async with client:
+        total, growth = await client.fetch_contributors_growth("a/b")
+    assert (total, growth) == (0, 0)
+
+
+@respx.mock
+async def test_fetch_issue_response_hours_averages_closed_issues(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/issues").mock(
+        return_value=httpx.Response(200, json=ISSUES_CLOSED_PAYLOAD)
+    )
+    async with client:
+        hours = await client.fetch_issue_response_hours("a/b")
+    # 36h and 6h (PR is skipped) -> mean 21.0
+    assert hours == pytest.approx(21.0)
+
+
+@respx.mock
+async def test_fetch_issue_response_hours_returns_zero_when_no_real_issues(
+    client: GitHubClient,
+) -> None:
+    respx.get("https://api.github.com/repos/a/b/issues").mock(
+        return_value=httpx.Response(200, json=[{"pull_request": {"url": "x"}}])
+    )
+    async with client:
+        hours = await client.fetch_issue_response_hours("a/b")
+    assert hours == 0.0

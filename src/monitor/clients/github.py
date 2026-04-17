@@ -297,6 +297,71 @@ class GitHubClient:
                     day_count += 1
         return (float(day_count), week_count / 7.0)
 
+    async def fetch_contributors_growth(self, full_name: str) -> tuple[int, int]:
+        """Returns (contributor_count, new_contributors_approx).
+
+        new_contributors_approx = count of contributors with <= 1 contribution,
+        used as a cheap proxy for recent joiners.
+        """
+        try:
+            payload = await self._request_json(
+                f"/repos/{full_name}/contributors", params={"per_page": "100"}
+            )
+        except GitHubError:
+            return (0, 0)
+        if not isinstance(payload, list):
+            return (0, 0)
+        total = len(payload)
+        growth = 0
+        for contributor in payload:
+            if not isinstance(contributor, dict):
+                continue
+            try:
+                if int(contributor.get("contributions", 0)) <= 1:
+                    growth += 1
+            except (TypeError, ValueError):
+                continue
+        return (total, growth)
+
+    async def fetch_issue_response_hours(self, full_name: str) -> float:
+        """Mean hours between open and close of the last up-to-10 real issues
+        (PRs excluded) that were closed."""
+        try:
+            payload = await self._request_json(
+                f"/repos/{full_name}/issues",
+                params={
+                    "state": "closed",
+                    "sort": "updated",
+                    "direction": "desc",
+                    "per_page": "30",
+                },
+            )
+        except GitHubError:
+            return 0.0
+        if not isinstance(payload, list):
+            return 0.0
+
+        intervals: list[float] = []
+        for issue in payload:
+            if not isinstance(issue, dict):
+                continue
+            if issue.get("pull_request"):
+                continue
+            created = issue.get("created_at")
+            closed = issue.get("closed_at")
+            if not created or not closed:
+                continue
+            try:
+                delta = _parse_dt(closed) - _parse_dt(created)
+            except ValueError:
+                continue
+            intervals.append(delta.total_seconds() / 3600.0)
+            if len(intervals) >= 10:
+                break
+        if not intervals:
+            return 0.0
+        return sum(intervals) / len(intervals)
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:
