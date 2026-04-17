@@ -6,6 +6,13 @@ import time
 from typing import Mapping
 
 
+# Cap any sleep on a rate-limit wall. GitHub's primary limit resets hourly;
+# anything longer than one cycle + buffer is anomalous (clock skew, malformed
+# Retry-After header, etc.) and we'd rather wake up early and retry the
+# request than stall the daemon for hours invisibly.
+_MAX_SLEEP_S = 3700.0
+
+
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc)
 
@@ -24,6 +31,19 @@ class RateLimiter:
         self._lock = asyncio.Lock()
 
     async def acquire(self, min_remaining: int = 50) -> None:
+        """Block until it is safe to make a request.
+
+        Holds the lock across ``await asyncio.sleep`` so that exactly one
+        coroutine sleeps per rate-limit window — the N-1 queued coroutines
+        drain serially after reset instead of thundering-herding at the
+        same instant.
+
+        State is NOT re-checked after waking: if another coroutine updated
+        the headers via ``update_from_headers`` during the sleep, those
+        changes take effect on the next ``acquire()`` call, not this one.
+        Sleep is capped at ``_MAX_SLEEP_S`` (~1 reset cycle + buffer) to
+        defend against malformed reset headers or extreme clock skew.
+        """
         async with self._lock:
             if self._remaining is None or self._remaining >= min_remaining:
                 return
@@ -32,9 +52,11 @@ class RateLimiter:
             wait_s = (self._reset_at - _utcnow()).total_seconds()
             if wait_s <= 0:
                 return
-            await asyncio.sleep(wait_s)
+            await asyncio.sleep(min(wait_s, _MAX_SLEEP_S))
 
     def update_from_headers(self, headers: Mapping[str, str]) -> None:
+        # GitHub returns integer epoch strings; float formats are silently
+        # ignored by the try/except below (unlikely to ship but non-fatal).
         remaining = headers.get("X-RateLimit-Remaining")
         reset = headers.get("X-RateLimit-Reset")
         if remaining is not None:
@@ -55,13 +77,13 @@ class SearchRateLimiter:
 
     def __init__(self, min_interval_s: float = 2.0) -> None:
         self._min_interval = min_interval_s
-        self._last_call: float = 0.0
+        self._last_call: float | None = None
         self._lock = asyncio.Lock()
 
     async def acquire(self) -> None:
         async with self._lock:
-            now = time.monotonic()
-            elapsed = now - self._last_call
-            if self._last_call and elapsed < self._min_interval:
-                await asyncio.sleep(self._min_interval - elapsed)
+            if self._last_call is not None:
+                elapsed = time.monotonic() - self._last_call
+                if elapsed < self._min_interval:
+                    await asyncio.sleep(self._min_interval - elapsed)
             self._last_call = time.monotonic()

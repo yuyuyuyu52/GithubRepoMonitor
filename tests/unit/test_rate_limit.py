@@ -98,3 +98,28 @@ async def test_search_limiter_enforces_min_interval(monkeypatch) -> None:
     _Clock.value += 5.0  # well past threshold
     await limiter.acquire()
     assert len(slept) == 1  # no new sleep
+
+
+async def test_rate_limiter_caps_anomalous_reset_header(monkeypatch) -> None:
+    """A reset header far in the future (clock skew / malformed) must not
+    block a coroutine for hours."""
+    rl = RateLimiter()
+    now = dt.datetime(2026, 4, 17, 12, 0, tzinfo=dt.timezone.utc)
+    ten_hours = now + dt.timedelta(hours=10)
+    rl.update_from_headers({
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": str(int(ten_hours.timestamp())),
+    })
+
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.rate_limit._utcnow", lambda: now)
+    monkeypatch.setattr("monitor.clients.rate_limit.asyncio.sleep", fake_sleep)
+
+    await rl.acquire(min_remaining=50)
+    assert slept, "expected to sleep"
+    # Cap is 3700s; the raw header wants 36000s.
+    assert slept[0] <= 3700.0
