@@ -7,8 +7,8 @@ Type=oneshot
 User=monitor
 Group=monitor
 WorkingDirectory=/opt/monitor
-EnvironmentFile=/etc/monitor/monitor.env
 Environment=MONITOR_DB_PATH=/var/lib/monitor/monitor.db
+EnvironmentFile=/etc/monitor/monitor.env
 ExecStart=/opt/monitor/venv/bin/python /opt/monitor/scripts/healthcheck.py
 NoNewPrivileges=true
 ProtectSystem=strict
