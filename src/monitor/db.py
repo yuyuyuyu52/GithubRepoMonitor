@@ -8,7 +8,7 @@ from typing import List, Literal
 import aiosqlite
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_001_DDL = """
 CREATE TABLE IF NOT EXISTS repositories (
@@ -112,13 +112,20 @@ CREATE TABLE IF NOT EXISTS run_log (
 """
 
 
-_MIGRATIONS: List[str] = [_MIGRATION_001_DDL]
+_MIGRATION_002_DDL = """
+CREATE TABLE IF NOT EXISTS daemon_state (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    paused     INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+    updated_at TEXT NOT NULL
+);
+"""
+
+_MIGRATIONS: List[str] = [_MIGRATION_001_DDL, _MIGRATION_002_DDL]
 
 
 async def connect(db_path: Path) -> aiosqlite.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = await aiosqlite.connect(db_path)
-    conn.row_factory = aiosqlite.Row
     await conn.execute("PRAGMA journal_mode=WAL;")
     await conn.execute("PRAGMA synchronous=NORMAL;")
     await conn.execute("PRAGMA foreign_keys=ON;")
@@ -156,6 +163,8 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
         await conn.executescript(ddl)
         if i == 1:
             await _migrate_001_data(conn)
+        if i == 2:
+            await _migrate_002_seed(conn)
         await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
         await conn.commit()
         applied += 1
@@ -207,6 +216,15 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
             """,
             (full_name, pushed_at, last_score),
         )
+
+
+async def _migrate_002_seed(conn: aiosqlite.Connection) -> None:
+    """Seed daemon_state with the singleton row. Idempotent: no-op if already present."""
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    await conn.execute(
+        "INSERT OR IGNORE INTO daemon_state (id, paused, updated_at) VALUES (1, 0, ?)",
+        (now,),
+    )
 
 
 BlacklistKind = Literal["repo", "author", "topic"]
@@ -380,5 +398,31 @@ async def put_preference_profile(
             based_on_feedback_count = excluded.based_on_feedback_count
         """,
         (profile_text, generated_at.isoformat(), based_on_feedback_count),
+    )
+    await conn.commit()
+
+
+async def get_daemon_state(conn: aiosqlite.Connection) -> dict:
+    async with conn.execute(
+        "SELECT paused, updated_at FROM daemon_state WHERE id = 1 LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        # Migration 002 seeds the singleton, so this is only reachable
+        # if the caller opened a DB without running migrations. Be safe.
+        return {"paused": False, "updated_at": None}
+    return {"paused": bool(row[0]), "updated_at": row[1]}
+
+
+async def set_daemon_paused(
+    conn: aiosqlite.Connection,
+    *,
+    paused: bool,
+    now: _dt.datetime | None = None,
+) -> None:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        "UPDATE daemon_state SET paused = ?, updated_at = ? WHERE id = 1",
+        (1 if paused else 0, now.isoformat()),
     )
     await conn.commit()
