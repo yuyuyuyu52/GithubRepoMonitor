@@ -59,3 +59,14 @@ def test_missing_config_file_falls_back_to_defaults(monkeypatch, tmp_path):
     _, config = load_config()
 
     assert config.keywords == ["agent", "llm", "monitor", "tooling"]
+
+
+def test_unknown_keys_in_config_file_raise(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps({"min_starrs": 500}), encoding="utf-8")
+    monkeypatch.setenv("MONITOR_CONFIG", str(cfg_path))
+
+    with pytest.raises(Exception) as exc_info:
+        load_config()
+
+    assert "min_starrs" in str(exc_info.value) or "extra" in str(exc_info.value).lower()

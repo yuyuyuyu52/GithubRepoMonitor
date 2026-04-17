@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,11 @@ class SurgeThresholds(BaseModel):
 
 
 class ConfigFile(BaseModel):
-    """Contents of the JSON config file (pointed to by MONITOR_CONFIG)."""
+    """Contents of the JSON config file (pointed to by MONITOR_CONFIG).
+
+    Raises pydantic.ValidationError on unknown keys so operator typos fail loud."""
+
+    model_config = ConfigDict(extra="forbid")
 
     keywords: List[str] = Field(
         default_factory=lambda: ["agent", "llm", "monitor", "tooling"]
