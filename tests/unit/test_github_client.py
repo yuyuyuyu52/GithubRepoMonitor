@@ -1,0 +1,134 @@
+import httpx
+import pytest
+import respx
+
+from monitor.clients.github import GitHubClient, GitHubError
+
+
+@pytest.fixture
+def client() -> GitHubClient:
+    return GitHubClient(token="ghp_test", request_timeout_s=5.0)
+
+
+@respx.mock
+async def test_request_json_sends_expected_headers(client: GitHubClient) -> None:
+    route = respx.get("https://api.github.com/repos/a/b").mock(
+        return_value=httpx.Response(200, json={"full_name": "a/b"})
+    )
+    async with client:
+        data = await client._request_json("/repos/a/b")
+    assert data == {"full_name": "a/b"}
+    req = route.calls.last.request
+    assert req.headers["User-Agent"] == "GithubRepoMonitor"
+    assert req.headers["Accept"] == "application/vnd.github+json"
+    assert req.headers["Authorization"] == "Bearer ghp_test"
+
+
+@respx.mock
+async def test_request_json_retries_on_429_with_retry_after(client: GitHubClient, monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    route = respx.get("https://api.github.com/repos/a/b").mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "3"}, text="rate limit exceeded"),
+            httpx.Response(200, json={"full_name": "a/b"}),
+        ]
+    )
+    async with client:
+        data = await client._request_json("/repos/a/b")
+    assert data == {"full_name": "a/b"}
+    assert route.call_count == 2
+    assert slept == [3.0]
+
+
+@respx.mock
+async def test_request_json_retries_on_500_with_backoff(client: GitHubClient, monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    route = respx.get("https://api.github.com/repos/a/b").mock(
+        side_effect=[
+            httpx.Response(500, text="boom"),
+            httpx.Response(502, text="bad gateway"),
+            httpx.Response(200, json={"full_name": "a/b"}),
+        ]
+    )
+    async with client:
+        data = await client._request_json("/repos/a/b")
+    assert data == {"full_name": "a/b"}
+    assert route.call_count == 3
+    assert slept == [1.0, 2.0]
+
+
+@respx.mock
+async def test_request_json_retries_on_network_error(client: GitHubClient, monkeypatch) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(s: float) -> None:
+        slept.append(s)
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    route = respx.get("https://api.github.com/repos/a/b").mock(
+        side_effect=[
+            httpx.ConnectError("network down"),
+            httpx.Response(200, json={"full_name": "a/b"}),
+        ]
+    )
+    async with client:
+        data = await client._request_json("/repos/a/b")
+    assert data == {"full_name": "a/b"}
+    assert slept == [1.0]
+
+
+@respx.mock
+async def test_request_json_raises_on_404(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    async with client:
+        with pytest.raises(GitHubError) as exc_info:
+            await client._request_json("/repos/a/b")
+    assert exc_info.value.status_code == 404
+
+
+@respx.mock
+async def test_request_json_fails_after_max_retries(client: GitHubClient, monkeypatch) -> None:
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://api.github.com/repos/a/b").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    async with client:
+        with pytest.raises(GitHubError):
+            await client._request_json("/repos/a/b")
+
+
+@respx.mock
+async def test_request_json_updates_rate_limiter_from_headers(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b").mock(
+        return_value=httpx.Response(
+            200,
+            json={},
+            headers={"X-RateLimit-Remaining": "4321", "X-RateLimit-Reset": "9999999999"},
+        )
+    )
+    async with client:
+        await client._request_json("/repos/a/b")
+    assert client.rate_limiter._remaining == 4321
+
+
+async def test_client_without_token_omits_authorization_header() -> None:
+    anon = GitHubClient(token=None, request_timeout_s=5.0)
+    async with anon:
+        headers = anon._base_headers()
+    assert "Authorization" not in headers
+    assert headers["User-Agent"] == "GithubRepoMonitor"
