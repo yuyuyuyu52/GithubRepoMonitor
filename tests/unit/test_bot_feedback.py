@@ -96,7 +96,7 @@ async def test_like_callback_writes_feedback_and_acks(tmp_db: Path) -> None:
         "SELECT action, push_id FROM user_feedback WHERE push_id = ?", (push_id,)
     ) as cur:
         rows = await cur.fetchall()
-    assert rows == [("like", push_id)]
+    assert [tuple(r) for r in rows] == [("like", push_id)]
     # Blacklist untouched for a like
     assert await is_blacklisted(conn, kind="author", value="acme") is False
     pref_builder.regenerate.assert_not_awaited()
@@ -123,7 +123,7 @@ async def test_block_author_callback_adds_to_blacklist(tmp_db: Path) -> None:
         "SELECT action FROM user_feedback WHERE push_id = ?", (push_id,)
     ) as cur:
         rows = await cur.fetchall()
-    assert rows == [("block_author",)]
+    assert [tuple(r) for r in rows] == [("block_author",)]
     await conn.close()
 
 
