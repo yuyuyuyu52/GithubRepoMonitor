@@ -225,23 +225,23 @@ async def add_blacklist_entry(
     source_ref: str | None = None,
     now: _dt.datetime | None = None,
 ) -> bool:
-    """Returns True if the row was inserted; False if it already existed."""
-    now = now or _dt.datetime.now(_dt.timezone.utc)
+    """Returns True if the row was inserted; False if it already existed.
+
+    Uses INSERT OR IGNORE against the UNIQUE (kind, value) index so the
+    check-then-insert is a single atomic statement (no TOCTOU window).
+    """
+    if now is None:
+        now = _dt.datetime.now(_dt.timezone.utc)
     async with conn.execute(
-        "SELECT 1 FROM blacklist WHERE kind = ? AND value = ? LIMIT 1",
-        (kind, value),
-    ) as cur:
-        if await cur.fetchone():
-            return False
-    await conn.execute(
         """
-        INSERT INTO blacklist (kind, value, added_at, source, source_ref)
+        INSERT OR IGNORE INTO blacklist (kind, value, added_at, source, source_ref)
         VALUES (?, ?, ?, ?, ?)
         """,
         (kind, value, now.isoformat(), source, source_ref),
-    )
+    ) as cur:
+        inserted = cur.rowcount == 1
     await conn.commit()
-    return True
+    return inserted
 
 
 async def is_blacklisted(

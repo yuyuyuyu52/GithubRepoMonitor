@@ -172,9 +172,16 @@ async def test_pushed_cooldown_state(tmp_db: Path) -> None:
         "rule_score, llm_score, final_score) VALUES (?, ?, 'digest', 1, 1, 1)",
         ("a/recent", recent),
     )
+    boundary = (now - dt.timedelta(days=14)).isoformat()
+    await conn.execute(
+        "INSERT INTO pushed_items (full_name, pushed_at, push_type, "
+        "rule_score, llm_score, final_score) VALUES (?, ?, 'digest', 1, 1, 1)",
+        ("a/boundary", boundary),
+    )
     await conn.commit()
 
     assert await pushed_cooldown_state(conn, "a/new", now, digest_days=14) == "never"
     assert await pushed_cooldown_state(conn, "a/old", now, digest_days=14) == "expired"
     assert await pushed_cooldown_state(conn, "a/recent", now, digest_days=14) == "active"
+    assert await pushed_cooldown_state(conn, "a/boundary", now, digest_days=14) == "expired"
     await conn.close()
