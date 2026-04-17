@@ -1,0 +1,37 @@
+[Unit]
+Description=GitHub Repo Monitor daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=monitor
+Group=monitor
+WorkingDirectory=/opt/monitor
+EnvironmentFile=/etc/monitor/monitor.env
+Environment=MONITOR_CONFIG=/etc/monitor/config.json
+Environment=MONITOR_DB_PATH=/var/lib/monitor/monitor.db
+Environment=MONITOR_LOG_PATH=/var/log/monitor/app.log
+ExecStart=/opt/monitor/venv/bin/python -m monitor
+Restart=on-failure
+RestartSec=30s
+StartLimitBurst=5
+StartLimitIntervalSec=600
+TimeoutStopSec=30s
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/monitor /var/log/monitor
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
