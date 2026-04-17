@@ -3,6 +3,7 @@ import pytest
 import respx
 
 from monitor.clients.github import GitHubClient, GitHubError
+from tests.fixtures.github_payloads import SEARCH_REPOSITORIES_OK
 
 
 @pytest.fixture
@@ -206,3 +207,56 @@ async def test_headers_override_merges_with_defaults(client: GitHubClient) -> No
     assert req.headers["Accept"] == "application/vnd.github.raw+json"
     assert req.headers["User-Agent"] == "GithubRepoMonitor"
     assert req.headers["Authorization"] == "Bearer ghp_test"
+
+
+@respx.mock
+async def test_search_repositories_parses_items(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/search/repositories").mock(
+        return_value=httpx.Response(200, json=SEARCH_REPOSITORIES_OK)
+    )
+    async with client:
+        repos = await client.search_repositories(
+            keyword="llm", language="Python", min_stars=100
+        )
+    assert [r.full_name for r in repos] == ["acme/widget", "acme/gear"]
+    assert repos[0].stars == 420
+    assert repos[0].topics == ["agent", "llm"]
+    assert repos[0].owner_login == "acme"
+
+
+@respx.mock
+async def test_search_repositories_waits_for_secondary_limiter(
+    client: GitHubClient, monkeypatch
+) -> None:
+    respx.get("https://api.github.com/search/repositories").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    called: list[str] = []
+    orig_search_acquire = client.search_rate_limiter.acquire
+
+    async def instrumented_acquire() -> None:
+        called.append("search")
+        await orig_search_acquire()
+
+    monkeypatch.setattr(client.search_rate_limiter, "acquire", instrumented_acquire)
+    async with client:
+        await client.search_repositories(keyword="llm", language="Python", min_stars=100)
+    assert called == ["search"]
+
+
+@respx.mock
+async def test_search_repositories_builds_correct_query(client: GitHubClient) -> None:
+    route = respx.get("https://api.github.com/search/repositories").mock(
+        return_value=httpx.Response(200, json={"items": []})
+    )
+    async with client:
+        await client.search_repositories(keyword="agent", language="Rust", min_stars=50)
+    req = route.calls.last.request
+    q = req.url.params.get("q")
+    assert "agent" in q
+    assert "language:Rust" in q
+    assert "stars:>=50" in q
+    assert "archived:false" in q
+    assert req.url.params["sort"] == "stars"
+    assert req.url.params["order"] == "desc"
+    assert req.url.params["per_page"] == "30"

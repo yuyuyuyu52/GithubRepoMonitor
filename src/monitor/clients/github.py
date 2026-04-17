@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
 from typing import Any
 
 import httpx
 import structlog
 
 from monitor.clients.rate_limit import RateLimiter, SearchRateLimiter
+from monitor.models import RepoCandidate
 
 
 log = structlog.get_logger(__name__)
@@ -208,6 +210,21 @@ class GitHubClient:
         except ValueError:
             return 60.0
 
+    async def search_repositories(
+        self, *, keyword: str, language: str, min_stars: int
+    ) -> list[RepoCandidate]:
+        await self.search_rate_limiter.acquire()
+        q = f"{keyword} language:{language} stars:>={min_stars} archived:false"
+        params = {
+            "q": q,
+            "sort": "stars",
+            "order": "desc",
+            "per_page": "30",
+        }
+        payload = await self._request_json("/search/repositories", params=params)
+        items = payload.get("items", []) if isinstance(payload, dict) else []
+        return [_repo_from_api(item) for item in items]
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:
@@ -216,3 +233,28 @@ def _is_rate_limit_response(resp: httpx.Response) -> bool:
         body = resp.text.lower()
         return any(phrase in body for phrase in _RATE_LIMIT_BODY_PHRASES)
     return False
+
+
+def _repo_from_api(item: dict) -> RepoCandidate:
+    return RepoCandidate(
+        full_name=item.get("full_name", ""),
+        html_url=item.get("html_url", ""),
+        description=item.get("description") or "",
+        language=item.get("language") or "Unknown",
+        stars=int(item.get("stargazers_count", 0)),
+        forks=int(item.get("forks_count", 0)),
+        created_at=_parse_dt(item.get("created_at", "1970-01-01T00:00:00Z")),
+        pushed_at=_parse_dt(item.get("pushed_at", "1970-01-01T00:00:00Z")),
+        owner_login=(item.get("owner") or {}).get("login", ""),
+        topics=list(item.get("topics") or []),
+    )
+
+
+def _parse_dt(value: str) -> dt.datetime:
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    parsed = dt.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc)
