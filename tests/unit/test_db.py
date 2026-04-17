@@ -97,3 +97,42 @@ async def test_migration_001_copies_legacy_seen_repositories(tmp_path: Path) -> 
     assert "stars" in cols
     assert "forks" in cols
     await conn.close()
+
+
+async def test_migration_001_is_idempotent_after_partial_crash(tmp_path: Path) -> None:
+    """A crashed-mid-migration DB must not produce duplicate pushed_items rows."""
+    db_path = tmp_path / "partial.db"
+    raw = sqlite3.connect(db_path)
+    raw.executescript("""
+        CREATE TABLE seen_repositories (
+            full_name TEXT PRIMARY KEY,
+            first_seen_at TEXT NOT NULL,
+            last_score REAL NOT NULL
+        );
+        INSERT INTO seen_repositories VALUES ('a/b', '2026-04-01T00:00:00+00:00', 7.5);
+    """)
+    raw.commit()
+    raw.close()
+
+    # First run applies migration fully.
+    conn = await connect(db_path)
+    await run_migrations(conn)
+    await conn.close()
+
+    # Simulate partial crash: wipe schema_version so the runner tries again,
+    # but leave the pushed_items row in place.
+    raw = sqlite3.connect(db_path)
+    raw.execute("DELETE FROM schema_version")
+    raw.commit()
+    raw.close()
+
+    conn = await connect(db_path)
+    applied = await run_migrations(conn)
+    assert applied == 1
+
+    async with conn.execute(
+        "SELECT COUNT(*) FROM pushed_items WHERE full_name='a/b'"
+    ) as cur:
+        count = (await cur.fetchone())[0]
+    assert count == 1, "expected exactly one pushed_items row, no duplicates"
+    await conn.close()

@@ -65,6 +65,8 @@ CREATE TABLE IF NOT EXISTS user_feedback (
 );
 CREATE INDEX IF NOT EXISTS ix_user_feedback_created_at
     ON user_feedback (created_at DESC);
+CREATE INDEX IF NOT EXISTS ix_user_feedback_push_id
+    ON user_feedback (push_id);
 
 CREATE TABLE IF NOT EXISTS blacklist (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,6 +134,18 @@ async def current_version(conn: aiosqlite.Connection) -> int:
 
 
 async def run_migrations(conn: aiosqlite.Connection) -> int:
+    """Apply pending migrations in order, returning how many were applied.
+
+    Crash-safety model: within one migration, ``executescript`` auto-commits
+    each DDL statement it runs (it is NOT atomic across the script), and
+    per-statement DDL like ``ALTER TABLE`` also commits immediately. The
+    trailing ``conn.commit()`` only hardens the DML from ``_migrate_001_data``
+    plus the ``schema_version`` insert. A crash before that commit leaves
+    schema already applied but no version row — re-running is safe because
+    all DDL uses ``IF NOT EXISTS`` and ``_migrate_001_data`` is idempotent
+    via its pre-insert existence check. Future migrations must preserve
+    these invariants: every DDL idempotent, every data step idempotent.
+    """
     version = await current_version(conn)
     applied = 0
     for i, ddl in enumerate(_MIGRATIONS, start=1):
@@ -171,6 +185,16 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
         rows = await cur.fetchall()
 
     for row in rows:
+        full_name = row[0]
+        pushed_at = row[1]
+        last_score = float(row[2]) if row[2] is not None else 0.0
+        async with conn.execute(
+            "SELECT 1 FROM pushed_items "
+            "WHERE full_name = ? AND pushed_at = ? LIMIT 1",
+            (full_name, pushed_at),
+        ) as cur:
+            if await cur.fetchone() is not None:
+                continue
         await conn.execute(
             """
             INSERT INTO pushed_items
@@ -179,5 +203,5 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
                  summary, reason, tg_chat_id, tg_message_id)
             VALUES (?, ?, 'digest', 0.0, 0.0, ?, NULL, NULL, NULL, NULL)
             """,
-            (row[0], row[1], float(row[2])),
+            (full_name, pushed_at, last_score),
         )
