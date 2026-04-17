@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +13,19 @@ class ScoringWeights(BaseModel):
 
     rule: float = 0.55
     llm: float = 0.45
+
+    @model_validator(mode="after")
+    def _weights_sum_to_one(self) -> "ScoringWeights":
+        # Tight tolerance — operator sets these in config.json, so typos
+        # like {"rule": 0.7, "llm": 0.7} must fail at startup rather than
+        # quietly producing `final_score = 14.x/10` in Telegram messages.
+        total = self.rule + self.llm
+        if abs(total - 1.0) > 0.001:
+            raise ValueError(
+                f"ScoringWeights.rule + ScoringWeights.llm must sum to 1.0 "
+                f"(got rule={self.rule} + llm={self.llm} = {total})"
+            )
+        return self
 
 
 class SurgeThresholds(BaseModel):

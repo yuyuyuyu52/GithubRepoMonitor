@@ -114,3 +114,18 @@ def test_score_higher_for_fresher_and_faster_repo() -> None:
         avg_issue_response_hours=100.0,
     )
     assert engine.score(fresh) > engine.score(stale)
+
+
+def test_score_does_not_reward_repos_without_issue_data() -> None:
+    """avg_issue_response_hours == 0 can mean 'no closed issues' or API error.
+    It must not be rewarded like an instantly-resolving repo."""
+    engine = _engine()
+    shared_kwargs = dict(
+        star_velocity_day=0.0,
+        star_velocity_week=0.0,
+        contributor_growth_week=0,
+        pushed_ago_days=1,
+    )
+    no_data = _repo(avg_issue_response_hours=0.0, **shared_kwargs)
+    fast_response = _repo(avg_issue_response_hours=1.0, **shared_kwargs)
+    assert engine.score(fast_response) > engine.score(no_data)

@@ -91,12 +91,20 @@ async def score_repo(
     )
 
     if source != "cache":
-        await put_cached_llm_score(
-            conn,
-            repo.full_name,
-            readme_sha256=readme_hash,
-            result=result,
-        )
+        try:
+            await put_cached_llm_score(
+                conn,
+                repo.full_name,
+                readme_sha256=readme_hash,
+                result=result,
+            )
+        except (aiosqlite.Error, OSError) as exc:
+            log.warning(
+                "score.cache_write_failed",
+                repo=repo.full_name,
+                source=source,
+                error=str(exc),
+            )
     log.info(
         "score.done",
         repo=repo.full_name,

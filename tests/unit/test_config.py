@@ -86,3 +86,38 @@ def test_unknown_keys_in_nested_models_raise(monkeypatch, tmp_path):
         load_config()
 
     assert "velocity_multipel" in str(exc_info.value) or "extra" in str(exc_info.value).lower()
+
+
+def test_scoring_weights_reject_sum_above_one(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"weights": {"rule": 0.7, "llm": 0.7}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("MONITOR_CONFIG", str(cfg_path))
+
+    with pytest.raises(Exception) as exc_info:
+        load_config()
+    assert "sum to 1.0" in str(exc_info.value) or "weights" in str(exc_info.value).lower()
+
+
+def test_scoring_weights_reject_sum_below_one(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"weights": {"rule": 0.3, "llm": 0.3}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("MONITOR_CONFIG", str(cfg_path))
+
+    with pytest.raises(Exception):
+        load_config()
+
+
+def test_scoring_weights_accept_valid_sum(tmp_path, monkeypatch):
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"weights": {"rule": 0.4, "llm": 0.6}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("MONITOR_CONFIG", str(cfg_path))
+
+    _, config = load_config()
+    assert config.weights.rule == 0.4
+    assert config.weights.llm == 0.6

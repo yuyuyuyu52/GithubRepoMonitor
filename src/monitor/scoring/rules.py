@@ -36,10 +36,15 @@ class RuleEngine:
         ratio = repo.fork_star_ratio or 0.0
         freshness_days = max((self._now - repo.pushed_at).days, 0)
         freshness_score = max(0.0, 10.0 - freshness_days / 10.0)
+        # `avg_issue_response_hours == 0` can mean "no closed issues yet" or
+        # an API failure, not "instant response". Map to 0 rather than 10 so
+        # repos without issue data are not rewarded on this dimension; the
+        # other dimensions (velocity, freshness, contributors) carry the
+        # positive signal where relevant.
         response_score = (
-            10.0
-            if repo.avg_issue_response_hours == 0
-            else max(0.0, 10.0 - repo.avg_issue_response_hours / 24.0)
+            max(0.0, 10.0 - repo.avg_issue_response_hours / 24.0)
+            if repo.avg_issue_response_hours > 0
+            else 0.0
         )
         combined = (
             min(repo.star_velocity_day, 10.0) * 0.25
