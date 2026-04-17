@@ -1,0 +1,17 @@
+[Unit]
+Description=GitHub Repo Monitor SQLite backup
+
+[Service]
+Type=oneshot
+User=monitor
+Group=monitor
+WorkingDirectory=/opt/monitor
+Environment=MONITOR_DB_PATH=/var/lib/monitor/monitor.db
+Environment=MONITOR_BACKUP_DIR=/var/lib/monitor/backups
+Environment=MONITOR_BACKUP_KEEP_DAYS=14
+ExecStart=/opt/monitor/scripts/backup.sh
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/monitor

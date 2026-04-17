@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily SQLite backup for monitor
+Requires=monitor-backup.service
+
+[Timer]
+# Daily at 03:15 UTC (= 11:15 Asia/Shanghai), well outside digest windows.
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+Unit=monitor-backup.service
+
+[Install]
+WantedBy=timers.target

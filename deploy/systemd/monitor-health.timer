@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly trigger for monitor healthcheck
+Requires=monitor-health.service
+
+[Timer]
+# Fire 15m after boot, then every hour.
+OnBootSec=15min
+OnUnitActiveSec=1h
+Unit=monitor-health.service
+
+[Install]
+WantedBy=timers.target
