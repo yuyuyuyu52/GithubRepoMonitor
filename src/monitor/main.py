@@ -62,6 +62,7 @@ async def run() -> int:
 
     bot_app = None
     scheduler = None
+    gh_client = None
     try:
         try:
             applied = await run_migrations(conn)
@@ -75,7 +76,7 @@ async def run() -> int:
             return 0
 
         state = await DaemonState.load(conn=conn, config=config)
-        bot_app, scheduler = await _maybe_start_bot_and_scheduler(
+        bot_app, scheduler, gh_client = await _maybe_start_bot_and_scheduler(
             settings, state, conn, stop,
         )
 
@@ -94,6 +95,11 @@ async def run() -> int:
                     await step()
                 except Exception:  # noqa: BLE001
                     log.exception("shutdown.bot_step_failed", step=step.__name__)
+        if gh_client is not None:
+            try:
+                await gh_client.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                log.exception("shutdown.gh_client_close_failed")
         await conn.close()
         log.info("shutdown.done")
     return 0
@@ -105,11 +111,11 @@ async def _maybe_start_bot_and_scheduler(
     conn,
     stop: asyncio.Event,
 ):
-    """Returns (bot_app, scheduler) tuple or (None, None)."""
+    """Returns (bot_app, scheduler, gh_client) tuple or (None, None, None)."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
         log.info("telegram.disabled", reason="missing_credentials")
         log.info("scheduler.disabled", reason="telegram_disabled")
-        return (None, None)
+        return (None, None, None)
 
     llm_client = _build_llm_client(settings, state.config)
 
@@ -179,7 +185,7 @@ async def _maybe_start_bot_and_scheduler(
             await gh_client.__aexit__(None, None, None)
         except Exception:  # noqa: BLE001
             pass
-        return (None, None)
+        return (None, None, None)
 
     log.info("telegram.started", chat_id=settings.telegram_chat_id)
 
@@ -213,7 +219,7 @@ async def _maybe_start_bot_and_scheduler(
     await start_scheduler(scheduler)
     log.info("scheduler.started")
 
-    return (bot_app, scheduler)
+    return (bot_app, scheduler, gh_client)
 
 
 def _build_llm_client(settings: Settings, config: ConfigFile) -> LLMClient | None:
