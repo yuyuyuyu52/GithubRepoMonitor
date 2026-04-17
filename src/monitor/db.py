@@ -591,3 +591,130 @@ async def get_latest_run_logs(
             }
         )
     return result
+
+
+async def start_run_log(
+    conn: aiosqlite.Connection,
+    *,
+    kind: str,
+    now: _dt.datetime | None = None,
+) -> int:
+    """Open a run_log entry. Returns the id; caller passes it to
+    finish_run_log on completion."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    cur = await conn.execute(
+        "INSERT INTO run_log (kind, started_at) VALUES (?, ?)",
+        (kind, now.isoformat()),
+    )
+    run_id = cur.lastrowid
+    await conn.commit()
+    assert run_id is not None
+    return run_id
+
+
+async def finish_run_log(
+    conn: aiosqlite.Connection,
+    *,
+    run_id: int,
+    status: Literal["ok", "partial", "failed"],
+    stats: dict,
+    now: _dt.datetime | None = None,
+) -> None:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        "UPDATE run_log SET ended_at = ?, status = ?, stats = ? WHERE id = ?",
+        (now.isoformat(), status, json.dumps(stats), run_id),
+    )
+    await conn.commit()
+
+
+async def upsert_repositories(
+    conn: aiosqlite.Connection,
+    repos: list["RepoCandidate"],
+    *,
+    now: _dt.datetime | None = None,
+) -> None:
+    """Bulk upsert. first_seen_at is write-once (INSERT only); last_enriched_at
+    is refreshed every call. The M5 digest pipeline calls this right after
+    collect so surge can later read topics/owner without fetching."""
+    from monitor.models import RepoCandidate  # noqa: F401
+
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    now_iso = now.isoformat()
+    for repo in repos:
+        await conn.execute(
+            """
+            INSERT INTO repositories (
+                full_name, html_url, description, language, topics,
+                owner_login, created_at, first_seen_at, last_enriched_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (full_name) DO UPDATE SET
+                html_url = excluded.html_url,
+                description = excluded.description,
+                language = excluded.language,
+                topics = excluded.topics,
+                owner_login = excluded.owner_login,
+                created_at = excluded.created_at,
+                last_enriched_at = excluded.last_enriched_at
+            """,
+            (
+                repo.full_name,
+                repo.html_url,
+                repo.description,
+                repo.language,
+                json.dumps(list(repo.topics)),
+                repo.owner_login,
+                repo.created_at.isoformat(),
+                now_iso,
+                now_iso,
+            ),
+        )
+    await conn.commit()
+
+
+async def upsert_repository_metrics(
+    conn: aiosqlite.Connection,
+    repo: "RepoCandidate",
+    *,
+    now: _dt.datetime | None = None,
+) -> None:
+    """Append a metrics snapshot (time-series row keyed by
+    (full_name, collected_at)). Upsert semantics guard against the rare
+    collision when two collections happen within the same second."""
+    from monitor.models import RepoCandidate  # noqa: F401
+
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        """
+        INSERT INTO repository_metrics (
+            full_name, collected_at,
+            stars, forks, star_velocity_day, star_velocity_week,
+            fork_star_ratio, avg_issue_response_hours,
+            contributor_count, contributor_growth_week, readme_completeness
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (full_name, collected_at) DO UPDATE SET
+            stars = excluded.stars,
+            forks = excluded.forks,
+            star_velocity_day = excluded.star_velocity_day,
+            star_velocity_week = excluded.star_velocity_week,
+            fork_star_ratio = excluded.fork_star_ratio,
+            avg_issue_response_hours = excluded.avg_issue_response_hours,
+            contributor_count = excluded.contributor_count,
+            contributor_growth_week = excluded.contributor_growth_week,
+            readme_completeness = excluded.readme_completeness
+        """,
+        (
+            repo.full_name,
+            now.isoformat(),
+            repo.stars,
+            repo.forks,
+            repo.star_velocity_day,
+            repo.star_velocity_week,
+            repo.fork_star_ratio,
+            repo.avg_issue_response_hours,
+            repo.contributor_count,
+            repo.contributor_growth_week,
+            repo.readme_completeness,
+        ),
+    )
+    await conn.commit()
