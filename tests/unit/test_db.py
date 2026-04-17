@@ -128,7 +128,7 @@ async def test_migration_001_is_idempotent_after_partial_crash(tmp_path: Path) -
 
     conn = await connect(db_path)
     applied = await run_migrations(conn)
-    assert applied == 1
+    assert applied == SCHEMA_VERSION
 
     async with conn.execute(
         "SELECT COUNT(*) FROM pushed_items WHERE full_name='a/b'"

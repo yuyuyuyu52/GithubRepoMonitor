@@ -83,3 +83,17 @@ Tests use fixtures from `tests/fixtures/github_payloads.py` (canonical dict lite
 Data model contract: `RepoCandidate` receives `rule_score`, `llm_score`, `final_score`, `summary`, `recommendation_reason`, `readme_completeness` from this layer. These were declared at default zero/empty in M2's model; M3 is the first stage that populates them.
 
 Tests use DI-mocked Anthropic SDK (no respx for LLM, we stub the `anthropic_client` constructor parameter with a `SimpleNamespace` whose `.messages.create` is an `AsyncMock`). The MiniMax endpoint's actual forced-tool-use / ephemeral-cache behavior is NOT exercised in CI — verifying it requires a one-off smoke script with real credentials, tracked as an operational TODO before M3 is wired into the scheduler in M5.
+
+### M4 additions
+
+`src/monitor/bot/` has four focused modules. `render.py` turns a scored `RepoCandidate` into a message text + 4-button `InlineKeyboardMarkup` with callback data shaped `fb:{action}:{push_id}`. `feedback.py` parses those callbacks, writes `user_feedback` + `blacklist` rows, edits the source message to show acknowledgement, and triggers `PreferenceBuilder.regenerate()` once `count_feedback_since_last_profile` crosses `config.preference_refresh_every`. `commands.py` exposes `/top` `/status` `/pause` `/resume` `/reload` as pure async handlers. `app.py` wires them into a PTB `Application` with a chat-id filter — updates from any chat other than the configured `TELEGRAM_CHAT_ID` are silently ignored.
+
+`src/monitor/state.py` introduces `DaemonState`: a singleton that holds the live `ConfigFile` reference and a `paused` bool persisted to the new `daemon_state` table (migration 002). M4 flips the flag via `/pause` / `/resume`; M5's scheduler reads it before every tick. `/reload` re-reads the JSON config file and swaps `state.config` atomically.
+
+`LLMClient.generate_text(prompt)` was added alongside `score_repo` so `PreferenceBuilder` can call it without touching the SDK internals. It uses a plain messages call (no tool use) and raises `LLMScoreError` on SDK failure or missing text block.
+
+`src/monitor/main.py` now boots the bot alongside the existing lifecycle. Without both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`, the bot is skipped (logs `telegram.disabled`) — M1's existing SIGTERM integration test still passes because that scenario is the no-bot path. Without `MINIMAX_API_KEY` the bot still runs but preference regeneration is a no-op.
+
+DB additions: migration 002 creates `daemon_state`. Seven new DAOs in `db.py` — `get_daemon_state`, `set_daemon_paused`, `insert_pushed_item`, `update_pushed_tg_message_id`, `record_user_feedback`, `count_feedback_since_last_profile`, `get_recent_pushes`, `get_latest_run_logs`. Tests continue the DI-mocked pattern — no real Telegram API calls in the suite.
+
+M4 does NOT yet fire push messages on a schedule. That is M5's scheduler task: it will call `score_repo`, then `insert_pushed_item`, then `render_repo_message`, then `bot.send_message(chat_id=..., text=text, reply_markup=markup)`, then `update_pushed_tg_message_id(id, msg_id)`. M4 provides all the building blocks.

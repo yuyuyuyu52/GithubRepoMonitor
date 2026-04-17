@@ -39,13 +39,17 @@ class PreferenceBuilder:
         self._conn = conn
         self._generate = llm_generate_profile
         self._max_per_action = max_per_action
-        self._now = now or dt.datetime.now(dt.timezone.utc)
+        # None = "use current time at each regenerate()" — correct for a
+        # long-lived daemon. A fixed value (tests) keeps behavior deterministic.
+        self._now_override = now
 
     async def regenerate(self) -> RegenerationResult | None:
         likes = await self._recent_feedback("like")
         dislikes = await self._recent_feedback("dislike")
         if not likes and not dislikes:
             return None
+
+        now = self._now_override or dt.datetime.now(dt.timezone.utc)
 
         prompt = self._build_prompt(likes, dislikes)
         profile_text = (await self._generate(prompt)).strip()
@@ -54,7 +58,7 @@ class PreferenceBuilder:
         await put_preference_profile(
             self._conn,
             profile_text=profile_text,
-            generated_at=self._now,
+            generated_at=now,
             based_on_feedback_count=count,
         )
         log.info(
@@ -64,7 +68,7 @@ class PreferenceBuilder:
         )
         return RegenerationResult(
             profile_text=profile_text,
-            generated_at=self._now,
+            generated_at=now,
             based_on_feedback_count=count,
         )
 

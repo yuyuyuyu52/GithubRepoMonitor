@@ -8,7 +8,7 @@ from typing import List, Literal
 import aiosqlite
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _MIGRATION_001_DDL = """
 CREATE TABLE IF NOT EXISTS repositories (
@@ -112,7 +112,15 @@ CREATE TABLE IF NOT EXISTS run_log (
 """
 
 
-_MIGRATIONS: List[str] = [_MIGRATION_001_DDL]
+_MIGRATION_002_DDL = """
+CREATE TABLE IF NOT EXISTS daemon_state (
+    id         INTEGER PRIMARY KEY CHECK (id = 1),
+    paused     INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+    updated_at TEXT NOT NULL
+);
+"""
+
+_MIGRATIONS: List[str] = [_MIGRATION_001_DDL, _MIGRATION_002_DDL]
 
 
 async def connect(db_path: Path) -> aiosqlite.Connection:
@@ -156,6 +164,8 @@ async def run_migrations(conn: aiosqlite.Connection) -> int:
         await conn.executescript(ddl)
         if i == 1:
             await _migrate_001_data(conn)
+        if i == 2:
+            await _migrate_002_seed(conn)
         await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (i,))
         await conn.commit()
         applied += 1
@@ -207,6 +217,15 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
             """,
             (full_name, pushed_at, last_score),
         )
+
+
+async def _migrate_002_seed(conn: aiosqlite.Connection) -> None:
+    """Seed daemon_state with the singleton row. Idempotent: no-op if already present."""
+    now = _dt.datetime.now(_dt.timezone.utc).isoformat()
+    await conn.execute(
+        "INSERT OR IGNORE INTO daemon_state (id, paused, updated_at) VALUES (1, 0, ?)",
+        (now,),
+    )
 
 
 BlacklistKind = Literal["repo", "author", "topic"]
@@ -382,3 +401,193 @@ async def put_preference_profile(
         (profile_text, generated_at.isoformat(), based_on_feedback_count),
     )
     await conn.commit()
+
+
+async def get_daemon_state(conn: aiosqlite.Connection) -> dict:
+    async with conn.execute(
+        "SELECT paused, updated_at FROM daemon_state WHERE id = 1 LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        # Migration 002 seeds the singleton, so this is only reachable
+        # if the caller opened a DB without running migrations. Be safe.
+        return {"paused": False, "updated_at": None}
+    return {"paused": bool(row[0]), "updated_at": row[1]}
+
+
+async def set_daemon_paused(
+    conn: aiosqlite.Connection,
+    *,
+    paused: bool,
+    now: _dt.datetime | None = None,
+) -> None:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        "UPDATE daemon_state SET paused = ?, updated_at = ? WHERE id = 1",
+        (1 if paused else 0, now.isoformat()),
+    )
+    await conn.commit()
+
+
+async def insert_pushed_item(
+    conn: aiosqlite.Connection,
+    *,
+    repo: "RepoCandidate",
+    push_type: Literal["digest", "surge"],
+    tg_chat_id: str,
+    tg_message_id: str | None = None,
+    now: _dt.datetime | None = None,
+) -> int:
+    """Insert a pushed_items row from a scored RepoCandidate. Returns the
+    new row's id so the caller can embed it in inline button callback_data
+    before sending the TG message, then update_pushed_tg_message_id once
+    the TG send returns a message_id."""
+    # Lazy import: db.py is lower-level than monitor.models.
+    from monitor.models import RepoCandidate  # noqa: F401
+
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    cur = await conn.execute(
+        """
+        INSERT INTO pushed_items (
+            full_name, pushed_at, push_type,
+            rule_score, llm_score, final_score,
+            summary, reason, tg_chat_id, tg_message_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            repo.full_name,
+            now.isoformat(),
+            push_type,
+            repo.rule_score,
+            repo.llm_score,
+            repo.final_score,
+            repo.summary,
+            repo.recommendation_reason,
+            tg_chat_id,
+            tg_message_id,
+        ),
+    )
+    push_id = cur.lastrowid
+    await conn.commit()
+    assert push_id is not None  # SQLite always assigns an integer PK
+    return push_id
+
+
+async def update_pushed_tg_message_id(
+    conn: aiosqlite.Connection,
+    *,
+    push_id: int,
+    tg_message_id: str,
+) -> None:
+    await conn.execute(
+        "UPDATE pushed_items SET tg_message_id = ? WHERE id = ?",
+        (tg_message_id, push_id),
+    )
+    await conn.commit()
+
+
+async def record_user_feedback(
+    conn: aiosqlite.Connection,
+    *,
+    push_id: int,
+    action: Literal["like", "dislike", "block_author", "block_topic"],
+    repo_snapshot: dict,
+    now: _dt.datetime | None = None,
+) -> None:
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    await conn.execute(
+        """
+        INSERT INTO user_feedback (push_id, action, created_at, repo_snapshot)
+        VALUES (?, ?, ?, ?)
+        """,
+        (push_id, action, now.isoformat(), json.dumps(repo_snapshot)),
+    )
+    await conn.commit()
+
+
+async def count_feedback_since_last_profile(conn: aiosqlite.Connection) -> int:
+    """Count of user_feedback rows created after the current preference_profile's
+    generated_at. Used to decide when to regenerate."""
+    async with conn.execute(
+        "SELECT generated_at FROM preference_profile WHERE id = 1 LIMIT 1"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or row[0] is None:
+        # No profile yet — every existing feedback counts.
+        async with conn.execute("SELECT COUNT(*) FROM user_feedback") as cur:
+            count_row = await cur.fetchone()
+        return int(count_row[0])
+    async with conn.execute(
+        "SELECT COUNT(*) FROM user_feedback WHERE created_at > ?",
+        (row[0],),
+    ) as cur:
+        count_row = await cur.fetchone()
+    return int(count_row[0])
+
+
+async def get_recent_pushes(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int = 10,
+) -> list[dict]:
+    async with conn.execute(
+        """
+        SELECT id, full_name, pushed_at, push_type,
+               rule_score, llm_score, final_score,
+               summary, reason
+        FROM pushed_items
+        ORDER BY pushed_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "full_name": r[1],
+            "pushed_at": r[2],
+            "push_type": r[3],
+            "rule_score": r[4],
+            "llm_score": r[5],
+            "final_score": r[6],
+            "summary": r[7] or "",
+            "reason": r[8] or "",
+        }
+        for r in rows
+    ]
+
+
+async def get_latest_run_logs(
+    conn: aiosqlite.Connection,
+    *,
+    limit: int = 5,
+) -> list[dict]:
+    async with conn.execute(
+        """
+        SELECT id, kind, started_at, ended_at, status, stats
+        FROM run_log
+        ORDER BY started_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ) as cur:
+        rows = await cur.fetchall()
+    result: list[dict] = []
+    for r in rows:
+        stats_raw = r[5]
+        try:
+            stats = json.loads(stats_raw) if stats_raw else {}
+        except (TypeError, ValueError):
+            stats = {}
+        result.append(
+            {
+                "id": r[0],
+                "kind": r[1],
+                "started_at": r[2],
+                "ended_at": r[3],
+                "status": r[4],
+                "stats": stats,
+            }
+        )
+    return result
