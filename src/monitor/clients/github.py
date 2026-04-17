@@ -254,7 +254,15 @@ class GitHubClient:
             if slug in seen:
                 continue
             seen.add(slug)
-            detail = await self.fetch_repository_detail(slug)
+            try:
+                detail = await self.fetch_repository_detail(slug)
+            except GitHubError as exc:
+                log.warning(
+                    "github.trending_detail_failed",
+                    slug=slug,
+                    status=exc.status_code,
+                )
+                continue
             if detail is not None:
                 repos.append(detail)
             if len(repos) >= max_repos:

@@ -452,3 +452,31 @@ async def test_fetch_readme_returns_empty_on_missing_readme(client: GitHubClient
     async with client:
         text = await client.fetch_readme("a/b")
     assert text == ""
+
+
+@respx.mock
+async def test_fetch_trending_repositories_skips_slug_on_non_404_detail_error(
+    client: GitHubClient, monkeypatch
+) -> None:
+    """One bad detail fetch (e.g. 500 after retry exhaustion) must not drop
+    the other trending repos."""
+    async def fake_sleep(_s: float) -> None:
+        return None
+
+    monkeypatch.setattr("monitor.clients.github.asyncio.sleep", fake_sleep)
+    respx.get("https://github.com/trending").mock(
+        return_value=httpx.Response(200, text=TRENDING_HTML)
+    )
+    # widget's detail keeps 500-ing for all 4 retry attempts.
+    respx.get("https://api.github.com/repos/acme/widget").mock(
+        return_value=httpx.Response(500, text="boom")
+    )
+    respx.get("https://api.github.com/repos/acme/gear").mock(
+        return_value=httpx.Response(
+            200,
+            json={**REPO_DETAIL_WIDGET, "full_name": "acme/gear", "html_url": "https://github.com/acme/gear"},
+        )
+    )
+    async with client:
+        repos = await client.fetch_trending_repositories()
+    assert [r.full_name for r in repos] == ["acme/gear"]
