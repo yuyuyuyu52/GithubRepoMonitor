@@ -205,3 +205,71 @@ async def _migrate_001_data(conn: aiosqlite.Connection) -> None:
             """,
             (full_name, pushed_at, last_score),
         )
+
+
+import datetime as _dt
+from typing import Literal
+
+
+BlacklistKind = Literal["repo", "author", "topic"]
+BlacklistSource = Literal["manual", "feedback"]
+CooldownState = Literal["never", "active", "expired"]
+
+
+async def add_blacklist_entry(
+    conn: aiosqlite.Connection,
+    *,
+    kind: BlacklistKind,
+    value: str,
+    source: BlacklistSource,
+    source_ref: str | None = None,
+    now: _dt.datetime | None = None,
+) -> bool:
+    """Returns True if the row was inserted; False if it already existed."""
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    async with conn.execute(
+        "SELECT 1 FROM blacklist WHERE kind = ? AND value = ? LIMIT 1",
+        (kind, value),
+    ) as cur:
+        if await cur.fetchone():
+            return False
+    await conn.execute(
+        """
+        INSERT INTO blacklist (kind, value, added_at, source, source_ref)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (kind, value, now.isoformat(), source, source_ref),
+    )
+    await conn.commit()
+    return True
+
+
+async def is_blacklisted(
+    conn: aiosqlite.Connection, *, kind: BlacklistKind, value: str
+) -> bool:
+    async with conn.execute(
+        "SELECT 1 FROM blacklist WHERE kind = ? AND value = ? LIMIT 1",
+        (kind, value),
+    ) as cur:
+        return (await cur.fetchone()) is not None
+
+
+async def pushed_cooldown_state(
+    conn: aiosqlite.Connection,
+    full_name: str,
+    now: _dt.datetime,
+    *,
+    digest_days: int,
+) -> CooldownState:
+    async with conn.execute(
+        "SELECT MAX(pushed_at) FROM pushed_items WHERE full_name = ?",
+        (full_name,),
+    ) as cur:
+        row = await cur.fetchone()
+    if not row or row[0] is None:
+        return "never"
+    last = _dt.datetime.fromisoformat(row[0])
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=_dt.timezone.utc)
+    delta = now - last
+    return "expired" if delta.days >= digest_days else "active"

@@ -5,7 +5,7 @@ from pathlib import Path
 import aiosqlite
 import pytest
 
-from monitor.db import connect, run_migrations, current_version, SCHEMA_VERSION
+from monitor.db import connect, run_migrations, current_version, SCHEMA_VERSION, add_blacklist_entry, is_blacklisted, pushed_cooldown_state
 
 
 @pytest.fixture
@@ -135,4 +135,46 @@ async def test_migration_001_is_idempotent_after_partial_crash(tmp_path: Path) -
     ) as cur:
         count = (await cur.fetchone())[0]
     assert count == 1, "expected exactly one pushed_items row, no duplicates"
+    await conn.close()
+
+
+async def test_blacklist_add_and_check(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    added = await add_blacklist_entry(conn, kind="author", value="spammy-org",
+                                      source="manual")
+    assert added is True
+    dup = await add_blacklist_entry(conn, kind="author", value="spammy-org",
+                                    source="manual")
+    assert dup is False
+
+    assert await is_blacklisted(conn, kind="author", value="spammy-org") is True
+    assert await is_blacklisted(conn, kind="author", value="other") is False
+    await conn.close()
+
+
+async def test_pushed_cooldown_state(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    now = dt.datetime(2026, 4, 17, 12, 0, tzinfo=dt.timezone.utc)
+    old = (now - dt.timedelta(days=30)).isoformat()
+    recent = (now - dt.timedelta(days=3)).isoformat()
+
+    await conn.execute(
+        "INSERT INTO pushed_items (full_name, pushed_at, push_type, "
+        "rule_score, llm_score, final_score) VALUES (?, ?, 'digest', 1, 1, 1)",
+        ("a/old", old),
+    )
+    await conn.execute(
+        "INSERT INTO pushed_items (full_name, pushed_at, push_type, "
+        "rule_score, llm_score, final_score) VALUES (?, ?, 'digest', 1, 1, 1)",
+        ("a/recent", recent),
+    )
+    await conn.commit()
+
+    assert await pushed_cooldown_state(conn, "a/new", now, digest_days=14) == "never"
+    assert await pushed_cooldown_state(conn, "a/old", now, digest_days=14) == "expired"
+    assert await pushed_cooldown_state(conn, "a/recent", now, digest_days=14) == "active"
     await conn.close()
