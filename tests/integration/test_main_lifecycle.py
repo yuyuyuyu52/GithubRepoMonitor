@@ -28,20 +28,23 @@ async def _start_process(tmp_path: Path) -> asyncio.subprocess.Process:
 
 async def test_main_starts_runs_migrations_and_exits_on_sigterm(tmp_path: Path) -> None:
     proc = await _start_process(tmp_path)
+    try:
+        startup_seen = False
+        for _ in range(50):
+            line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
+            if not line:
+                break
+            if b"migrations.applied" in line:
+                startup_seen = True
+                break
+        assert startup_seen, "did not observe migrations.applied log line"
 
-    # Wait for the startup log line to ensure migrations have run.
-    startup_seen = False
-    for _ in range(50):
-        line = await asyncio.wait_for(proc.stdout.readline(), timeout=5.0)
-        if not line:
-            break
-        if b"migrations.applied" in line:
-            startup_seen = True
-            break
-    assert startup_seen, "did not observe migrations.applied log line"
-
-    proc.send_signal(signal.SIGTERM)
-    rc = await asyncio.wait_for(proc.wait(), timeout=10.0)
-    assert rc == 0
+        proc.send_signal(signal.SIGTERM)
+        rc = await asyncio.wait_for(proc.wait(), timeout=10.0)
+        assert rc == 0
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
 
     assert (tmp_path / "mon.db").exists()
