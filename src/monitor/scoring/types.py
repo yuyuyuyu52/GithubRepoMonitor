@@ -17,8 +17,12 @@ class ScoreResult(BaseModel):
 
     score: float = Field(ge=1.0, le=10.0)
     readme_completeness: float = Field(ge=0.0, le=1.0)
-    summary: str
-    reason: str
+    # max_length mirrors the limits advertised in SCORE_TOOL's JSON schema.
+    # If the LLM ignores the soft constraint and returns an oversized string,
+    # pydantic raises ValidationError → LLMClient wraps to LLMScoreError →
+    # orchestrator falls back to heuristic.
+    summary: str = Field(max_length=140)
+    reason: str = Field(max_length=240)
     matched_interests: List[str]
     red_flags: List[str]
 

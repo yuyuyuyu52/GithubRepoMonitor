@@ -57,3 +57,24 @@ def test_llm_score_error_carries_reason() -> None:
     exc = LLMScoreError("bad tool_use block", cause="schema_mismatch")
     assert "bad tool_use" in str(exc)
     assert exc.cause == "schema_mismatch"
+
+
+def test_score_result_rejects_oversized_summary_or_reason() -> None:
+    """SCORE_TOOL declares summary≤140 and reason≤240; ScoreResult must
+    enforce the same at runtime so the LLM-ignores-schema case fails loud."""
+    base = {
+        "score": 8.0,
+        "readme_completeness": 0.8,
+        "summary": "s",
+        "reason": "r",
+        "matched_interests": [],
+        "red_flags": [],
+    }
+    # summary too long
+    with pytest.raises(ValidationError):
+        ScoreResult.model_validate({**base, "summary": "x" * 141})
+    # reason too long
+    with pytest.raises(ValidationError):
+        ScoreResult.model_validate({**base, "reason": "y" * 241})
+    # at the exact boundary, still valid
+    ScoreResult.model_validate({**base, "summary": "x" * 140, "reason": "y" * 240})

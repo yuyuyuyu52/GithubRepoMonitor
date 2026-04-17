@@ -173,4 +173,6 @@ async def test_score_repo_truncates_long_readme() -> None:
     # user_text is either a string or a list of content blocks
     if isinstance(user_text, list):
         user_text = " ".join(b.get("text", "") for b in user_text if isinstance(b, dict))
-    assert len(user_text) < 20000
+    # Actual max ≈ 12000 (README) + ~300 (template overhead). A regression that
+    # truncated at 18K would have silently passed the old `< 20000` bound.
+    assert len(user_text) < 12300
