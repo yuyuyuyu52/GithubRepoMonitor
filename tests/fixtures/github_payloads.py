@@ -67,7 +67,7 @@ def events_payload(day_watches: int = 5, week_watches: int = 12) -> list[dict]:
     for i in range(older):
         events.append({
             "type": "WatchEvent",
-            "created_at": (now - dt.timedelta(days=1, hours=i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "created_at": (now - dt.timedelta(days=1, hours=1 + i)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         })
     # Add some non-watch noise we should ignore.
     events.append({"type": "PushEvent", "created_at": now.strftime("%Y-%m-%dT%H:%M:%SZ")})

@@ -261,6 +261,42 @@ class GitHubClient:
                 break
         return repos
 
+    async def fetch_repo_events(self, full_name: str) -> tuple[float, float]:
+        """Returns (star_velocity_day, star_velocity_week) in stars/day.
+
+        star_velocity_day = WatchEvent count within last 24h.
+        star_velocity_week = WatchEvent count within last 7d / 7.
+        """
+        try:
+            payload = await self._request_json(
+                f"/repos/{full_name}/events", params={"per_page": "100"}
+            )
+        except GitHubError:
+            return (0.0, 0.0)
+        if not isinstance(payload, list):
+            return (0.0, 0.0)
+
+        now = _now_utc()
+        day_ago = now - dt.timedelta(days=1)
+        week_ago = now - dt.timedelta(days=7)
+        day_count = 0
+        week_count = 0
+        for event in payload:
+            if not isinstance(event, dict) or event.get("type") != "WatchEvent":
+                continue
+            created_raw = event.get("created_at")
+            if not created_raw:
+                continue
+            try:
+                created_at = _parse_dt(created_raw)
+            except ValueError:
+                continue
+            if created_at >= week_ago:
+                week_count += 1
+                if created_at >= day_ago:
+                    day_count += 1
+        return (float(day_count), week_count / 7.0)
+
 
 def _is_rate_limit_response(resp: httpx.Response) -> bool:
     if resp.status_code == 429:
@@ -294,3 +330,7 @@ def _parse_dt(value: str) -> dt.datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=dt.timezone.utc)
     return parsed.astimezone(dt.timezone.utc)
+
+
+def _now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)

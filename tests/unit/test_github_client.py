@@ -3,7 +3,12 @@ import pytest
 import respx
 
 from monitor.clients.github import GitHubClient, GitHubError
-from tests.fixtures.github_payloads import REPO_DETAIL_WIDGET, SEARCH_REPOSITORIES_OK, TRENDING_HTML
+from tests.fixtures.github_payloads import (
+    REPO_DETAIL_WIDGET,
+    SEARCH_REPOSITORIES_OK,
+    TRENDING_HTML,
+    events_payload,
+)
 
 
 @pytest.fixture
@@ -340,3 +345,29 @@ async def test_fetch_trending_repositories_returns_empty_on_html_failure(
     async with client:
         repos = await client.fetch_trending_repositories()
     assert repos == []
+
+
+@respx.mock
+async def test_fetch_repo_events_counts_watch_events(client: GitHubClient, monkeypatch) -> None:
+    import datetime as dt
+    fixed_now = dt.datetime(2026, 4, 17, 12, 0, tzinfo=dt.timezone.utc)
+    monkeypatch.setattr("monitor.clients.github._now_utc", lambda: fixed_now)
+
+    respx.get("https://api.github.com/repos/a/b/events").mock(
+        return_value=httpx.Response(200, json=events_payload(day_watches=5, week_watches=14))
+    )
+    async with client:
+        day, week = await client.fetch_repo_events("a/b")
+    # 5 WatchEvents within last 24h; 14 within last 7d (mean per day = 2.0)
+    assert day == 5.0
+    assert week == pytest.approx(2.0)
+
+
+@respx.mock
+async def test_fetch_repo_events_returns_zeros_on_http_error(client: GitHubClient) -> None:
+    respx.get("https://api.github.com/repos/a/b/events").mock(
+        return_value=httpx.Response(404, json={"message": "Not Found"})
+    )
+    async with client:
+        day, week = await client.fetch_repo_events("a/b")
+    assert (day, week) == (0.0, 0.0)
