@@ -718,3 +718,129 @@ async def upsert_repository_metrics(
         ),
     )
     await conn.commit()
+
+
+async def get_latest_metric(
+    conn: aiosqlite.Connection, full_name: str
+) -> dict | None:
+    async with conn.execute(
+        """
+        SELECT collected_at, stars, forks, star_velocity_day, star_velocity_week,
+               fork_star_ratio, avg_issue_response_hours,
+               contributor_count, contributor_growth_week, readme_completeness
+        FROM repository_metrics
+        WHERE full_name = ?
+        ORDER BY collected_at DESC
+        LIMIT 1
+        """,
+        (full_name,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return {
+        "collected_at": row[0],
+        "stars": row[1],
+        "forks": row[2],
+        "star_velocity_day": row[3],
+        "star_velocity_week": row[4],
+        "fork_star_ratio": row[5],
+        "avg_issue_response_hours": row[6],
+        "contributor_count": row[7],
+        "contributor_growth_week": row[8],
+        "readme_completeness": row[9],
+    }
+
+
+async def get_surge_candidates(
+    conn: aiosqlite.Connection,
+    *,
+    now: _dt.datetime,
+    cooldown_days: int,
+) -> list[dict]:
+    """Repos from `repositories` that are either never pushed OR whose last
+    push is older than cooldown_days. Used by the surge poll — we never
+    re-surface anything pushed inside the cooldown window."""
+    cutoff = (now - _dt.timedelta(days=cooldown_days)).isoformat()
+    async with conn.execute(
+        """
+        SELECT r.full_name, r.html_url, r.description, r.language,
+               r.topics, r.owner_login, r.created_at
+        FROM repositories r
+        LEFT JOIN (
+            SELECT full_name, MAX(pushed_at) AS last_pushed_at
+            FROM pushed_items
+            GROUP BY full_name
+        ) p ON p.full_name = r.full_name
+        WHERE p.last_pushed_at IS NULL OR p.last_pushed_at < ?
+        """,
+        (cutoff,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "full_name": r[0],
+            "html_url": r[1],
+            "description": r[2] or "",
+            "language": r[3] or "Unknown",
+            "topics": json.loads(r[4]) if r[4] else [],
+            "owner_login": r[5] or "",
+            "created_at": r[6],
+        }
+        for r in rows
+    ]
+
+
+async def get_pushed_since(
+    conn: aiosqlite.Connection,
+    *,
+    since: _dt.datetime,
+) -> list[dict]:
+    async with conn.execute(
+        """
+        SELECT id, full_name, pushed_at, push_type, final_score, summary
+        FROM pushed_items
+        WHERE pushed_at >= ?
+        ORDER BY pushed_at DESC
+        """,
+        (since.isoformat(),),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        {
+            "id": r[0],
+            "full_name": r[1],
+            "pushed_at": r[2],
+            "push_type": r[3],
+            "final_score": r[4],
+            "summary": r[5] or "",
+        }
+        for r in rows
+    ]
+
+
+async def get_feedback_counts_since(
+    conn: aiosqlite.Connection,
+    *,
+    since: _dt.datetime,
+) -> dict[str, int]:
+    async with conn.execute(
+        """
+        SELECT action, COUNT(*)
+        FROM user_feedback
+        WHERE created_at >= ?
+        GROUP BY action
+        """,
+        (since.isoformat(),),
+    ) as cur:
+        rows = await cur.fetchall()
+    counts: dict[str, int] = {
+        "like": 0,
+        "dislike": 0,
+        "block_author": 0,
+        "block_topic": 0,
+    }
+    for action, count in rows:
+        if action in counts:
+            counts[action] = int(count)
+    return counts

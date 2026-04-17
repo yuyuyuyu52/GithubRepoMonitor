@@ -7,6 +7,12 @@ import pytest
 from monitor.db import (
     connect,
     finish_run_log,
+    get_feedback_counts_since,
+    get_latest_metric,
+    get_pushed_since,
+    get_surge_candidates,
+    insert_pushed_item,
+    record_user_feedback,
     run_migrations,
     start_run_log,
     upsert_repositories,
@@ -141,4 +147,108 @@ async def test_upsert_repository_metrics_appends_rows(tmp_db: Path) -> None:
     assert rows[0][0] == t0.isoformat()
     assert rows[0][1] == 5.0
     assert rows[1][0] == (t0 + dt.timedelta(hours=12)).isoformat()
+    await conn.close()
+
+
+async def test_get_latest_metric_returns_most_recent(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    repo = _repo()
+    t0 = dt.datetime(2026, 4, 18, 8, 0, tzinfo=dt.timezone.utc)
+    await upsert_repository_metrics(conn, repo, now=t0)
+    # Bump velocity for second snapshot
+    repo.star_velocity_day = 12.0
+    await upsert_repository_metrics(conn, repo, now=t0 + dt.timedelta(hours=12))
+
+    latest = await get_latest_metric(conn, repo.full_name)
+    assert latest is not None
+    assert latest["star_velocity_day"] == 12.0
+    assert latest["collected_at"] == (t0 + dt.timedelta(hours=12)).isoformat()
+
+    # Missing repo returns None
+    missing = await get_latest_metric(conn, "no/such")
+    assert missing is None
+    await conn.close()
+
+
+async def test_get_surge_candidates_filters_by_cooldown(tmp_db: Path) -> None:
+    """Surge pool = repos in `repositories` whose last pushed_at is either
+    NULL or older than surge cooldown (default 3d). Active-cooldown pushes
+    must be excluded."""
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+
+    now = dt.datetime(2026, 4, 18, 12, 0, tzinfo=dt.timezone.utc)
+    # Seed three repos into repositories
+    for name in ("a/never", "b/recent", "c/stale"):
+        await upsert_repositories(conn, [_repo(name)], now=now)
+
+    # b/recent: pushed 1 day ago (within 3d cooldown — should be excluded)
+    await conn.execute(
+        "INSERT INTO pushed_items (full_name, pushed_at, push_type, rule_score, "
+        "llm_score, final_score, tg_chat_id) VALUES (?, ?, 'digest', 0, 0, 0, '1')",
+        ("b/recent", (now - dt.timedelta(days=1)).isoformat()),
+    )
+    # c/stale: pushed 10 days ago (past cooldown — should be included)
+    await conn.execute(
+        "INSERT INTO pushed_items (full_name, pushed_at, push_type, rule_score, "
+        "llm_score, final_score, tg_chat_id) VALUES (?, ?, 'digest', 0, 0, 0, '1')",
+        ("c/stale", (now - dt.timedelta(days=10)).isoformat()),
+    )
+    await conn.commit()
+
+    candidates = await get_surge_candidates(conn, now=now, cooldown_days=3)
+    names = sorted(c["full_name"] for c in candidates)
+    assert names == ["a/never", "c/stale"]
+    await conn.close()
+
+
+async def test_get_pushed_since_filters_by_timestamp(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    t0 = dt.datetime(2026, 4, 18, 8, 0, tzinfo=dt.timezone.utc)
+    for i, offset in enumerate([-8, -3, -1]):  # days
+        at = (t0 + dt.timedelta(days=offset)).isoformat()
+        await conn.execute(
+            "INSERT INTO pushed_items (full_name, pushed_at, push_type, rule_score, "
+            "llm_score, final_score, tg_chat_id) VALUES (?, ?, 'digest', 1, 1, ?, '1')",
+            (f"a/repo-{i}", at, float(i)),
+        )
+    await conn.commit()
+
+    since = t0 - dt.timedelta(days=7)
+    rows = await get_pushed_since(conn, since=since)
+    names = sorted(r["full_name"] for r in rows)
+    # The -8-day repo is EXCLUDED (before 'since'); the others are included
+    assert names == ["a/repo-1", "a/repo-2"]
+    await conn.close()
+
+
+async def test_get_feedback_counts_since(tmp_db: Path) -> None:
+    conn = await connect(tmp_db)
+    await run_migrations(conn)
+    # Seed a pushed_items row to satisfy FK
+    push_id = await insert_pushed_item(
+        conn, repo=_repo(), push_type="digest", tg_chat_id="1"
+    )
+    t0 = dt.datetime(2026, 4, 18, 8, 0, tzinfo=dt.timezone.utc)
+
+    for action, offset in [
+        ("like", -8),      # before the since window
+        ("like", -1),      # in window
+        ("like", -0.5),    # in window
+        ("dislike", -2),   # in window
+        ("block_author", -1),  # in window but not counted as like/dislike
+    ]:
+        await record_user_feedback(
+            conn,
+            push_id=push_id,
+            action=action,
+            repo_snapshot={},
+            now=t0 + dt.timedelta(days=offset),
+        )
+
+    since = t0 - dt.timedelta(days=7)
+    counts = await get_feedback_counts_since(conn, since=since)
+    assert counts == {"like": 2, "dislike": 1, "block_author": 1, "block_topic": 0}
     await conn.close()
