@@ -9,11 +9,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ScoringWeights(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     rule: float = 0.55
     llm: float = 0.45
 
 
 class SurgeThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     velocity_multiple: float = 3.0
     velocity_absolute_day: float = 20.0
     cooldown_days: int = 3

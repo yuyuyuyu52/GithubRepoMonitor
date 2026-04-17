@@ -70,3 +70,19 @@ def test_unknown_keys_in_config_file_raise(monkeypatch, tmp_path):
         load_config()
 
     assert "min_starrs" in str(exc_info.value) or "extra" in str(exc_info.value).lower()
+
+
+def test_unknown_keys_in_nested_models_raise(monkeypatch, tmp_path):
+    """Typos inside the `surge` / `weights` blocks must fail loud too, not
+    silently fall back to defaults."""
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(
+        json.dumps({"surge": {"velocity_multipel": 5.0}}),  # intentional typo
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MONITOR_CONFIG", str(cfg_path))
+
+    with pytest.raises(Exception) as exc_info:
+        load_config()
+
+    assert "velocity_multipel" in str(exc_info.value) or "extra" in str(exc_info.value).lower()
