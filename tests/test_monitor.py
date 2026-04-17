@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from src.github_repo_monitor import MonitorConfig, MonitorPipeline, RepoCandidate, RuleEngine, SQLiteStore
+from src.github_repo_monitor import MonitorConfig, MonitorPipeline, RepoCandidate, RuleEngine, SQLiteStore, parse_dt
 
 
 class RuleEngineTests(unittest.TestCase):
@@ -109,6 +109,13 @@ class StoreTests(unittest.TestCase):
             store.mark_seen(repo)
             self.assertTrue(store.is_seen("owner/repo"))
             store.close()
+
+
+class DateParsingTests(unittest.TestCase):
+    def test_parse_dt_supports_z_and_offset(self) -> None:
+        z_time = parse_dt("2026-04-17T03:37:52Z")
+        offset_time = parse_dt("2026-04-17T03:37:52+00:00")
+        self.assertEqual(z_time, offset_time)
 
 
 if __name__ == "__main__":
