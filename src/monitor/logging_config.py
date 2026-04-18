@@ -37,6 +37,22 @@ def _resolve_level(level: str) -> int:
     return numeric
 
 
+#: Third-party loggers that leak secrets at INFO and below. httpx prints the
+#: full request URL which includes the Telegram bot token; python-telegram-bot
+#: forwards tokens through its internals; apscheduler and telegram also emit
+#: noisy plain-text lines that clutter structured logs. Silence anything below
+#: WARNING so tokens never reach journald / /var/log/monitor/app.log.
+_NOISY_LOGGERS: tuple[str, ...] = (
+    "httpx",
+    "httpcore",
+    "telegram",
+    "telegram.ext",
+    "apscheduler",
+    "apscheduler.scheduler",
+    "apscheduler.executors.default",
+)
+
+
 def configure_logging(
     log_path: Path | None = None,
     *,
@@ -59,6 +75,10 @@ def configure_logging(
         handler.setFormatter(logging.Formatter("%(message)s"))
         root.addHandler(handler)
     root.setLevel(_resolve_level(level))
+
+    # Gag secret-leaking + noisy third-party loggers. Errors still surface.
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     structlog.configure(
         processors=[
