@@ -60,7 +60,7 @@ def test_llm_score_error_carries_reason() -> None:
 
 
 def test_score_result_rejects_oversized_summary_or_reason() -> None:
-    """SCORE_TOOL declares summary≤140 and reason≤240; ScoreResult must
+    """SCORE_TOOL declares summary≤800 and reason≤240; ScoreResult must
     enforce the same at runtime so the LLM-ignores-schema case fails loud."""
     base = {
         "score": 8.0,
@@ -72,9 +72,9 @@ def test_score_result_rejects_oversized_summary_or_reason() -> None:
     }
     # summary too long
     with pytest.raises(ValidationError):
-        ScoreResult.model_validate({**base, "summary": "x" * 141})
+        ScoreResult.model_validate({**base, "summary": "x" * 801})
     # reason too long
     with pytest.raises(ValidationError):
         ScoreResult.model_validate({**base, "reason": "y" * 241})
     # at the exact boundary, still valid
-    ScoreResult.model_validate({**base, "summary": "x" * 140, "reason": "y" * 240})
+    ScoreResult.model_validate({**base, "summary": "x" * 800, "reason": "y" * 240})

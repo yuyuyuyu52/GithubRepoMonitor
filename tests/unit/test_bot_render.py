@@ -37,8 +37,17 @@ def test_render_repo_message_contains_core_fields() -> None:
     assert "acme/widget" in text
     assert "7.85" in text  # final_score
     assert "Widget library" in text  # summary
-    assert "Matches your agent interest" in text  # reason
+    # Stats line uses pipe separator and stars/forks/velocity
+    assert "420 stars" in text
+    assert "21 forks" in text
+    # Topics line includes the first 5 topics, comma-separated
+    assert "topics: agent, llm" in text
     assert "https://github.com/acme/widget" in text
+    # recommendation_reason is NO LONGER surfaced in the card (stored in DB only)
+    assert "Matches your agent interest" not in text
+    # No emojis in the rendered card
+    for emoji in ("⭐", "🔗", "📦", "📊", "🏷", "📝"):
+        assert emoji not in text
     assert isinstance(markup, InlineKeyboardMarkup)
 
 
@@ -49,20 +58,18 @@ def test_render_repo_message_has_four_buttons_with_callback_data() -> None:
     assert len(buttons) == 4
 
     labels_to_actions = {
-        "👍": "like",
-        "👎": "dislike",
-        "🚫 作者": "block_author",
-        "🔕 topic": "block_topic",
+        "赞": "like",
+        "踩": "dislike",
+        "屏蔽作者": "block_author",
+        "屏蔽话题": "block_topic",
     }
+    seen = set()
     for button in buttons:
-        matched = False
-        for emoji_prefix, action in labels_to_actions.items():
-            if emoji_prefix in button.text:
-                expected = f"{CALLBACK_PREFIX}:{action}:42"
-                assert button.callback_data == expected
-                matched = True
-                break
-        assert matched, f"unexpected button label: {button.text}"
+        action = labels_to_actions.get(button.text)
+        assert action is not None, f"unexpected button label: {button.text}"
+        assert button.callback_data == f"{CALLBACK_PREFIX}:{action}:42"
+        seen.add(action)
+    assert seen == set(labels_to_actions.values())
 
 
 def test_parse_callback_data_roundtrips() -> None:

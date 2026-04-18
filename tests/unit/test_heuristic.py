@@ -57,10 +57,10 @@ def test_heuristic_reason_mentions_match_counts() -> None:
 
 
 def test_heuristic_truncates_summary_to_scoreresult_max_length() -> None:
-    """ScoreResult.summary has max_length=140. A long GitHub description
+    """ScoreResult.summary has max_length=800. A long GitHub description
     must be truncated, not crash the heuristic via ValidationError — that
     would defeat the "LLM failure → heuristic fallback" contract."""
-    long_desc = "A" * 300
+    long_desc = "A" * 900
     # Must not raise
     result = heuristic_score_readme(_repo(description=long_desc), interest_tags=[])
-    assert len(result.summary) <= 140
+    assert len(result.summary) <= 800

@@ -21,7 +21,7 @@ class ScoreResult(BaseModel):
     # If the LLM ignores the soft constraint and returns an oversized string,
     # pydantic raises ValidationError → LLMClient wraps to LLMScoreError →
     # orchestrator falls back to heuristic.
-    summary: str = Field(max_length=140)
+    summary: str = Field(max_length=800)
     reason: str = Field(max_length=240)
     matched_interests: List[str]
     red_flags: List[str]
