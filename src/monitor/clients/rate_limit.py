@@ -59,6 +59,18 @@ class RateLimiter:
         # out-of-range / huge epoch values are all silently ignored rather than
         # crashing the caller — a broken header leaves the limiter state on its
         # previous value, which is far better than tearing down a digest run.
+        #
+        # X-RateLimit-Resource tells us which quota these headers describe.
+        # `/search/*` returns resource="search" with a 30/min budget, which is
+        # orders of magnitude smaller than the 5000/hr core budget. Writing
+        # those numbers into this limiter would cause every subsequent core
+        # call to sleep until the search reset fires — a "remaining=29 < 50"
+        # comparison is meaningless when mixing resources. SearchRateLimiter
+        # already covers the /search spacing independently, so we just ignore
+        # non-core headers here.
+        resource = headers.get("X-RateLimit-Resource")
+        if resource is not None and str(resource) != "core":
+            return
         remaining = headers.get("X-RateLimit-Remaining")
         reset = headers.get("X-RateLimit-Reset")
         if remaining is not None:
