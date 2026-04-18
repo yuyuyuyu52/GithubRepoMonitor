@@ -12,7 +12,9 @@ from monitor.scoring.types import LLMScoreError, ScoreResult
 
 log = structlog.get_logger(__name__)
 
-README_TRUNCATE_CHARS = 12000
+# Upper bound on README characters fed to the LLM. 99% of READMEs fit well
+# under this; the cap only defends against pathologically large files.
+README_TRUNCATE_CHARS = 100000
 DEFAULT_MAX_TOKENS = 1024
 
 _TOOL_NAME = "submit_repo_score"
@@ -45,8 +47,12 @@ SCORE_TOOL: dict[str, Any] = {
             },
             "summary": {
                 "type": "string",
-                "maxLength": 140,
-                "description": "项目一句话摘要",
+                "maxLength": 800,
+                "description": (
+                    "项目介绍：这个仓库是什么 / 能做什么 / 底层依赖什么 / "
+                    "典型使用方式。400-800 个中文字符，不要加标题、图标或分段，"
+                    "直接写成完整段落。"
+                ),
             },
             "reason": {
                 "type": "string",
@@ -68,11 +74,16 @@ SCORE_TOOL: dict[str, Any] = {
 }
 
 
-_RUBRIC = """你是开源项目评估助手。对每个仓库按以下维度打分 1-10：
+_RUBRIC = """你是开源项目评估助手。给每个仓库按以下维度综合打分 1-10：
 - 工程质量：代码/README/文档完整度
 - 活跃度：最近提交、issue 响应、贡献者增长
-- 方向性：是否对用户的兴趣标签有明显匹配
-- 独特性：相较同类项目的差异化
+- 方向性：是否匹配用户兴趣标签
+- 独特性：相对同类项目的差异化
+
+summary 字段写这个仓库**是什么、能做什么、底层依赖什么、典型使用方式**，\
+400-800 中文字符，不要加标题、图标或分段，直接写成完整段落。不要在 \
+summary 里罗列打分维度、数值或命中的兴趣标签——那些走各自的字段。
+
 以 submit_repo_score 工具返回结构化结果。"""
 
 
@@ -195,16 +206,18 @@ class LLMClient:
     ) -> str:
         readme = (repo.readme_text or "")[:README_TRUNCATE_CHARS]
         tags_text = "、".join(interest_tags) if interest_tags else "(无)"
+        topics_text = "、".join(repo.topics[:10]) if repo.topics else "(无)"
         return (
             f"仓库：{repo.full_name}\n"
             f"描述：{repo.description or '(空)'}\n"
             f"语言：{repo.language}\n"
+            f"Topics：{topics_text}\n"
             f"Stars：{repo.stars}，Forks：{repo.forks}\n"
             f"近 24h star 增速：{repo.star_velocity_day:.1f}\n"
             f"贡献者数：{repo.contributor_count}\n"
             f"平均 issue 响应：{repo.avg_issue_response_hours:.1f} 小时\n"
             f"用户兴趣标签：{tags_text}\n"
-            f"\nREADME（截断 {README_TRUNCATE_CHARS} 字符）：\n{readme}"
+            f"\nREADME：\n{readme}"
         )
 
 

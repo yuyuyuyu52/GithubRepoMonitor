@@ -164,7 +164,7 @@ async def test_score_repo_truncates_long_readme() -> None:
     client = _client_with_mock(_tool_use_response(payload))
 
     huge = _repo()
-    huge.readme_text = "x" * 30000
+    huge.readme_text = "x" * 150000  # well above README_TRUNCATE_CHARS=100000
 
     await client.score_repo(huge, interest_tags=[], preference_profile=None)
 
@@ -173,6 +173,6 @@ async def test_score_repo_truncates_long_readme() -> None:
     # user_text is either a string or a list of content blocks
     if isinstance(user_text, list):
         user_text = " ".join(b.get("text", "") for b in user_text if isinstance(b, dict))
-    # Actual max ≈ 12000 (README) + ~300 (template overhead). A regression that
-    # truncated at 18K would have silently passed the old `< 20000` bound.
-    assert len(user_text) < 12300
+    # Actual max ≈ 100000 (README cap) + ~400 (template overhead). A regression
+    # that disabled truncation entirely would blow past 150000.
+    assert len(user_text) < 100500

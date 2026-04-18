@@ -59,6 +59,16 @@ async def handle_feedback_callback(
     action, push_id = parsed
 
     repo_snapshot = await _load_repo_snapshot(conn, push_id)
+    if not repo_snapshot:
+        # Stale button: push_id refers to a pushed_items row that no longer
+        # exists (DB wiped / different bot / older test run). Writing
+        # user_feedback would fail the FK; instead acknowledge and move on.
+        log.info("feedback.stale_push_id", push_id=push_id, action=action)
+        try:
+            await cq.edit_message_text("⚠️ 这条推送的记录已不存在（DB 已重置？）")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("feedback.edit_stale_failed", push_id=push_id, error=str(exc))
+        return
 
     await record_user_feedback(
         conn,
@@ -110,8 +120,11 @@ async def handle_feedback_callback(
 
 async def _load_repo_snapshot(conn: aiosqlite.Connection, push_id: int) -> dict:
     """Snapshot enough of the pushed repo to drive blacklist / preference
-    decisions. We pull from pushed_items rather than joining to repositories
-    to keep the feedback handler independent of the (still-evolving) repo
+    decisions. Returns an empty dict when the push_id is unknown — callers
+    should treat that as a stale button and skip persistence.
+
+    We pull from pushed_items rather than joining to repositories to keep
+    the feedback handler independent of the (still-evolving) repo
     metadata schema."""
     async with conn.execute(
         "SELECT full_name, summary FROM pushed_items WHERE id = ?",

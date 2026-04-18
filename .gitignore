@@ -6,3 +6,12 @@ monitor.db
 dist/
 build/
 .pytest_cache/
+
+# Local smoke-test artifacts (Mac-run of the daemon)
+.env.local
+local-config.json
+local-monitor.db
+local-monitor.db-journal
+local-monitor.db-wal
+local-monitor.db-shm
+local-monitor.log
