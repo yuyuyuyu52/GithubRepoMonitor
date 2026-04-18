@@ -62,6 +62,19 @@ def test_invalid_level_raises():
         configure_logging(level="bogus")
 
 
+def test_noisy_third_party_loggers_are_gagged():
+    """httpx/telegram/apscheduler loggers leak credentials or spam plain text
+    at INFO. configure_logging must raise their threshold to WARNING so bot
+    tokens never reach /var/log/monitor/app.log or journald."""
+    configure_logging()
+    for name in ("httpx", "httpcore", "telegram", "telegram.ext",
+                 "apscheduler", "apscheduler.scheduler",
+                 "apscheduler.executors.default"):
+        assert logging.getLogger(name).level >= logging.WARNING, (
+            f"{name} logger must be >= WARNING to avoid leaking secrets in URLs"
+        )
+
+
 def test_configure_logging_is_idempotent_for_handlers(tmp_path):
     # Calling twice with a file path must not leak FDs — the first handler is
     # closed before being dropped.
