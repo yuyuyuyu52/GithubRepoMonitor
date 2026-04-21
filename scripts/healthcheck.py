@@ -6,6 +6,11 @@ last 25h of run_log entries for at least one successful digest run, and
 sends a Telegram alert if the check fails. Always exits 0 so systemd
 doesn't retry or flap.
 
+Alerts are throttled with a tiny state file (default lives next to the DB)
+so the same failure is only reported once per cooldown window (24h by
+default; override with MONITOR_HEALTHCHECK_ALERT_COOLDOWN_HOURS or
+MONITOR_HEALTHCHECK_STATE_PATH).
+
 Uses only the Python standard library so this still runs when the project
 venv is broken — that's exactly the state where we most need the alert.
 """
