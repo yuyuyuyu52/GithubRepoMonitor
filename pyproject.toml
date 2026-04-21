@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "monitor"
 version = "0.1.0"
-description = "GitHub repo monitor - productionized"
+description = "GitHub 开源项目监控（产品化版）"
 requires-python = ">=3.11"
 dependencies = [
     "httpx>=0.27",
