@@ -91,3 +91,38 @@ def test_check_last_digest_handles_missing_db(healthcheck_module, tmp_path):
     ok, reason = healthcheck_module.check_last_digest(str(missing), now)
     assert ok is False
     assert "db_connect_failed" in reason or "db_query_failed" in reason
+
+
+def test_should_send_alert_throttles_same_reason(healthcheck_module, tmp_path):
+    state_path = tmp_path / "state.json"
+    now = dt.datetime(2026, 4, 18, 12, 0, tzinfo=dt.timezone.utc)
+
+    assert healthcheck_module.should_send_alert(
+        "no_successful_digest_in_25h", now, state_path, cooldown_hours=24
+    ) is True
+    assert state_path.exists() is True
+    assert healthcheck_module.should_send_alert(
+        "no_successful_digest_in_25h",
+        now + dt.timedelta(hours=1),
+        state_path,
+        cooldown_hours=24,
+    ) is False
+    assert healthcheck_module.should_send_alert(
+        "db_connect_failed", now + dt.timedelta(hours=1), state_path, cooldown_hours=24
+    ) is True
+
+
+def test_clear_alert_state_resets_throttle(healthcheck_module, tmp_path):
+    state_path = tmp_path / "state.json"
+    now = dt.datetime(2026, 4, 18, 12, 0, tzinfo=dt.timezone.utc)
+
+    assert healthcheck_module.should_send_alert(
+        "no_successful_digest_in_25h", now, state_path, cooldown_hours=24
+    ) is True
+    healthcheck_module.clear_alert_state(state_path)
+    assert healthcheck_module.should_send_alert(
+        "no_successful_digest_in_25h",
+        now + dt.timedelta(hours=1),
+        state_path,
+        cooldown_hours=24,
+    ) is True
